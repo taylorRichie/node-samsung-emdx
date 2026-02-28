@@ -49,6 +49,7 @@ export default function App() {
   const [brightness, setBrightness] = useState(100)
   const [contrast, setContrast] = useState(100)
   const [orientation, setOrientation] = useState<"landscape" | "portrait">("portrait")
+  const [outputRotation, setOutputRotation] = useState(90)
   const [croppedAreaPixels, setCroppedAreaPixels] = useState<Area | null>(null)
   const [pushing, setPushing] = useState(false)
   const [settingsOpen, setSettingsOpen] = useState(false)
@@ -70,7 +71,10 @@ export default function App() {
       const params = new URLSearchParams({ host: settings.host, pin: settings.pin })
       if (settings.mac) params.set("mac", settings.mac)
       const res = await fetch(`/api/status?${params}`)
-      if (res.ok) setStatus(await res.json())
+      if (res.ok) {
+        const data = await res.json().catch(() => null)
+        if (data) setStatus(data)
+      }
     } catch {
       /* display may be asleep */
     } finally {
@@ -102,6 +106,33 @@ export default function App() {
   const onCropComplete = useCallback((_: Area, croppedPixels: Area) => {
     setCroppedAreaPixels(croppedPixels)
   }, [])
+
+  const onMediaLoaded = useCallback((mediaSize: { width: number; height: number }) => {
+    const { width: w, height: h } = mediaSize
+    const targetAspect = aspect
+    let cropW: number, cropH: number
+    if (w / h > targetAspect) {
+      cropH = h
+      cropW = h * targetAspect
+    } else {
+      cropW = w
+      cropH = w / targetAspect
+    }
+    setCroppedAreaPixels({
+      x: (w - cropW) / 2,
+      y: (h - cropH) / 2,
+      width: cropW,
+      height: cropH,
+    })
+  }, [aspect])
+
+  const handleLoadLastImage = useCallback(() => {
+    if (!lastImage) return
+    setImageSrc(lastImage)
+    setCrop({ x: 0, y: 0 })
+    setZoom(1)
+    setRotation(0)
+  }, [lastImage])
 
   const handleFile = useCallback((file: File) => {
     if (!file.type.startsWith("image/")) {
@@ -165,7 +196,7 @@ export default function App() {
     setPushing(true)
     try {
       const blob = await getCroppedImageBlob(
-        imageSrc, croppedAreaPixels, rotation, brightness, contrast
+        imageSrc, croppedAreaPixels, rotation, brightness, contrast, outputRotation
       )
 
       const formData = new FormData()
@@ -176,9 +207,8 @@ export default function App() {
       formData.append("sleepAfter", String(settings.sleepAfter))
 
       const res = await fetch("/api/push", { method: "POST", body: formData })
-      const data = await res.json()
-
-      if (!res.ok) throw new Error(data.error || "Push failed")
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok) throw new Error((data as { error?: string }).error || res.statusText || "Push failed")
 
       const sleepMsg = settings.sleepAfter > 0
         ? ` Display will sleep in ${settings.sleepAfter}min.`
@@ -208,8 +238,8 @@ export default function App() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ host: settings.host, pin: settings.pin, mac: settings.mac }),
       })
-      const data = await res.json()
-      if (!res.ok) throw new Error(data.error)
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok) throw new Error((data as { error?: string }).error || res.statusText || "Wake failed")
       toast.success("Wake-on-LAN sent!")
       setTimeout(fetchStatus, 3000)
     } catch (err: unknown) {
@@ -229,8 +259,8 @@ export default function App() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ host: settings.host, pin: settings.pin, mac: settings.mac }),
       })
-      const data = await res.json()
-      if (!res.ok) throw new Error(data.error)
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok) throw new Error((data as { error?: string }).error || res.statusText || "Sleep failed")
       toast.success("Display powered off")
       setTimeout(fetchStatus, 2000)
     } catch (err: unknown) {
@@ -436,17 +466,23 @@ export default function App() {
                 `}
               >
                 {lastImage && !dragOver ? (
-                  <div className="relative flex flex-col items-center gap-3">
+                  <div
+                    className="relative flex flex-col items-center gap-3 cursor-pointer group"
+                    onClick={(e) => {
+                      e.stopPropagation()
+                      handleLoadLastImage()
+                    }}
+                  >
                     <p className="text-xs font-medium text-muted-foreground uppercase tracking-wider">
                       Currently on display
                     </p>
                     <img
                       src={lastImage}
                       alt="Last pushed"
-                      className="max-h-[280px] max-w-full rounded-md border border-border shadow-lg object-contain"
+                      className="max-h-[280px] max-w-full rounded-md border border-border shadow-lg object-contain group-hover:ring-2 group-hover:ring-primary/50 transition-shadow"
                     />
                     <p className="text-xs text-muted-foreground">
-                      Drop or click to push a new image
+                      Click to edit & push again · or drop a new image
                     </p>
                   </div>
                 ) : (
@@ -499,12 +535,13 @@ export default function App() {
                     onCropChange={setCrop}
                     onZoomChange={setZoom}
                     onCropComplete={onCropComplete}
+                    onMediaLoaded={onMediaLoaded}
                   />
                 </div>
 
                 {/* Controls */}
                 <div className="p-4 space-y-4 border-t border-border">
-                  <div className="flex items-center gap-2 mb-2">
+                  <div className="flex flex-wrap items-center gap-3 mb-2">
                     <Button
                       variant="outline"
                       size="sm"
@@ -520,6 +557,20 @@ export default function App() {
                       }
                       {orientation === "landscape" ? "Landscape 16:9" : "Portrait 9:16"}
                     </Button>
+                    <div className="flex items-center gap-1.5">
+                      <span className="text-xs font-medium text-muted-foreground">Output:</span>
+                      {([0, 90, 180, 270] as const).map((deg) => (
+                        <Button
+                          key={deg}
+                          variant={outputRotation === deg ? "default" : "outline"}
+                          size="sm"
+                          onClick={() => setOutputRotation(deg)}
+                          className="h-7 px-2 text-xs"
+                        >
+                          {deg}°
+                        </Button>
+                      ))}
+                    </div>
                   </div>
                   <div className="grid grid-cols-2 gap-6">
                     <div className="space-y-2">

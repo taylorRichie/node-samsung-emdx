@@ -13,7 +13,8 @@ export async function getCroppedImageBlob(
   cropArea: CropArea,
   rotation: number = 0,
   brightness: number = 100,
-  contrast: number = 100
+  contrast: number = 100,
+  outputRotation: number = 0
 ): Promise<Blob> {
   const image = await loadImage(imageSrc)
   const canvas = document.createElement("canvas")
@@ -69,8 +70,23 @@ export async function getCroppedImageBlob(
     outHeight
   )
 
+  let finalCanvas = croppedCanvas
+  if (outputRotation && outputRotation % 360 !== 0) {
+    const rotRad = (outputRotation * Math.PI) / 180
+    const { width: rW, height: rH } = getRotatedBoundingBox(outWidth, outHeight, outputRotation)
+    const rotatedCanvas = document.createElement("canvas")
+    rotatedCanvas.width = Math.round(rW)
+    rotatedCanvas.height = Math.round(rH)
+    const rCtx = rotatedCanvas.getContext("2d")!
+    rCtx.translate(rotatedCanvas.width / 2, rotatedCanvas.height / 2)
+    rCtx.rotate(rotRad)
+    rCtx.translate(-outWidth / 2, -outHeight / 2)
+    rCtx.drawImage(croppedCanvas, 0, 0)
+    finalCanvas = rotatedCanvas
+  }
+
   return new Promise((resolve, reject) => {
-    croppedCanvas.toBlob(
+    finalCanvas.toBlob(
       (blob) => {
         if (!blob) return reject(new Error("Canvas toBlob failed"))
         resolve(blob)

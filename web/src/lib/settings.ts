@@ -32,7 +32,7 @@ export async function loadDefaultsFromServer(): Promise<DisplaySettings | null> 
   try {
     const res = await fetch("/api/defaults")
     if (!res.ok) return null
-    return await res.json()
+    return await res.json().catch(() => null)
   } catch {
     return null
   }
