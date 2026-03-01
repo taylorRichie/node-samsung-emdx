@@ -111,6 +111,10 @@ node bin/index.mjs status --host 192.168.0.123 --pin 123456
 5. The display fetches the content manifest and image over HTTP
 6. The display refreshes with the new image
 
+## Documentation
+
+- **[CLI Reference](docs/CLI.md)** — Detailed guide to all CLI commands, MDC protocol, content format, and troubleshooting
+
 ## References
 
 - [node-samsung-mdc](https://github.com/WeeJeWel/node-samsung-mdc) — Samsung MDC protocol implementation
