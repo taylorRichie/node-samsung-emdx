@@ -509,7 +509,7 @@ export default function App() {
     if (!imageSrc || !croppedAreaPixels) return
     setPushing(true)
     try {
-      const blob = await getCroppedImageBlob(imageSrc, croppedAreaPixels, rotation, brightness, contrast, 0)
+      const blob = await getCroppedImageBlob(imageSrc, croppedAreaPixels, rotation, brightness, contrast, outputRotation)
       const formData = new FormData()
       formData.append("image", blob, "queued.jpg")
       const res = await fetch("/api/queue", { method: "POST", body: formData })
