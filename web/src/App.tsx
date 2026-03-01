@@ -23,7 +23,8 @@ import {
   Moon,
   RefreshCw,
   Smartphone,
-  MonitorSmartphone,
+  Wifi,
+  WifiOff,
 } from "lucide-react"
 
 import { Button } from "@/components/ui/button"
@@ -32,7 +33,7 @@ import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Slider } from "@/components/ui/slider"
 import { getCroppedImageBlob } from "@/lib/crop-image"
-import { loadSettings, saveSettings, loadDefaultsFromServer, type DisplaySettings } from "@/lib/settings"
+import { loadSettings, saveSettings, loadDefaultsFromServer, type DisplaySettings, type SleepMode } from "@/lib/settings"
 
 interface DisplayStatus {
   power: string | null
@@ -83,16 +84,22 @@ export default function App() {
   }, [settings.host, settings.pin, settings.mac])
 
   useEffect(() => {
-    // Load server defaults if no settings have been saved locally yet
-    if (!settings.host) {
-      loadDefaultsFromServer().then(defaults => {
-        if (defaults && defaults.host) {
-          const merged = { ...settings, ...defaults }
-          setSettings(merged)
+    loadDefaultsFromServer().then(defaults => {
+      if (!defaults) return
+      setSettings(prev => {
+        const merged = {
+          host: prev.host || defaults.host || "",
+          pin: prev.pin || defaults.pin || "",
+          mac: prev.mac || defaults.mac || "",
+          sleepAfter: prev.sleepAfter ?? defaults.sleepAfter ?? 20,
+          sleepMode: prev.sleepMode || "light" as SleepMode,
+        }
+        if (merged.host !== prev.host || merged.pin !== prev.pin || merged.mac !== prev.mac || merged.sleepAfter !== prev.sleepAfter || merged.sleepMode !== prev.sleepMode) {
           saveSettings(merged)
         }
+        return merged
       })
-    }
+    })
 
     fetchStatus()
     fetch("/api/last-image").then(r => {
@@ -205,6 +212,7 @@ export default function App() {
       formData.append("pin", settings.pin)
       if (settings.mac) formData.append("mac", settings.mac)
       formData.append("sleepAfter", String(settings.sleepAfter))
+      formData.append("sleepMode", settings.sleepMode)
 
       const res = await fetch("/api/push", { method: "POST", body: formData })
       const data = await res.json().catch(() => ({}))
@@ -226,8 +234,8 @@ export default function App() {
   }
 
   const handleWake = async () => {
-    if (!settings.mac) {
-      toast.error("MAC address required for Wake-on-LAN. Set it in settings.")
+    if (!settings.mac && !settings.host) {
+      toast.error("Host IP or MAC address required to wake. Set them in settings.")
       setSettingsOpen(true)
       return
     }
@@ -238,9 +246,10 @@ export default function App() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ host: settings.host, pin: settings.pin, mac: settings.mac }),
       })
-      const data = await res.json().catch(() => ({}))
-      if (!res.ok) throw new Error((data as { error?: string }).error || res.statusText || "Wake failed")
-      toast.success("Wake-on-LAN sent!")
+      const data = await res.json().catch(() => ({})) as { success?: boolean; method?: string; error?: string }
+      if (!res.ok) throw new Error(data.error || res.statusText || "Wake failed")
+      const methodMsg = data.method === "mdc" ? "Woken via network (MDC)" : "Wake-on-LAN sent"
+      toast.success(`${methodMsg}!`)
       setTimeout(fetchStatus, 3000)
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : "Unknown error"
@@ -257,11 +266,12 @@ export default function App() {
       const res = await fetch("/api/sleep", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ host: settings.host, pin: settings.pin, mac: settings.mac }),
+        body: JSON.stringify({ host: settings.host, pin: settings.pin, mac: settings.mac, sleepMode: settings.sleepMode }),
       })
       const data = await res.json().catch(() => ({}))
       if (!res.ok) throw new Error((data as { error?: string }).error || res.statusText || "Sleep failed")
-      toast.success("Display powered off")
+      const modeLabel = settings.sleepMode === "deep" ? "deep sleep (physical button to wake)" : "light sleep (network wake)"
+      toast.success(`Display powered off — ${modeLabel}`)
       setTimeout(fetchStatus, 2000)
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : "Unknown error"
@@ -412,12 +422,55 @@ export default function App() {
                 </div>
               </div>
 
+              {/* Sleep mode toggle */}
+              <div className="mt-4 pt-4 border-t border-border">
+                <Label className="text-xs font-semibold uppercase tracking-wider text-muted-foreground mb-3 block">
+                  Sleep Mode
+                </Label>
+                <div className="grid grid-cols-2 gap-2">
+                  <button
+                    type="button"
+                    onClick={() => updateSetting("sleepMode", "light")}
+                    className={`flex items-start gap-3 rounded-lg border p-3 text-left transition-colors ${
+                      settings.sleepMode === "light"
+                        ? "border-primary bg-primary/5 ring-1 ring-primary"
+                        : "border-border hover:border-muted-foreground/50"
+                    }`}
+                  >
+                    <Wifi className={`h-4 w-4 mt-0.5 shrink-0 ${settings.sleepMode === "light" ? "text-primary" : "text-muted-foreground"}`} />
+                    <div>
+                      <p className="text-sm font-medium">Light Sleep</p>
+                      <p className="text-xs text-muted-foreground mt-0.5">
+                        WiFi stays on. Wake remotely via network. Uses more battery.
+                      </p>
+                    </div>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => updateSetting("sleepMode", "deep")}
+                    className={`flex items-start gap-3 rounded-lg border p-3 text-left transition-colors ${
+                      settings.sleepMode === "deep"
+                        ? "border-primary bg-primary/5 ring-1 ring-primary"
+                        : "border-border hover:border-muted-foreground/50"
+                    }`}
+                  >
+                    <WifiOff className={`h-4 w-4 mt-0.5 shrink-0 ${settings.sleepMode === "deep" ? "text-primary" : "text-muted-foreground"}`} />
+                    <div>
+                      <p className="text-sm font-medium">Deep Sleep</p>
+                      <p className="text-xs text-muted-foreground mt-0.5">
+                        WiFi off. Minimum battery drain. Requires physical button to wake.
+                      </p>
+                    </div>
+                  </button>
+                </div>
+              </div>
+
               <div className="flex items-center gap-2 mt-4 pt-4 border-t border-border">
                 <Button
                   variant="outline"
                   size="sm"
                   onClick={handleWake}
-                  disabled={waking || !settings.mac}
+                  disabled={waking || (!settings.mac && !settings.host)}
                   className="gap-2"
                 >
                   {waking ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Power className="h-3.5 w-3.5" />}

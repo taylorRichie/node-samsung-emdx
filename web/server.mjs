@@ -45,28 +45,34 @@ function cancelSleepTimer() {
   }
 }
 
-function scheduleSleep({ host, pin, mac, minutes }) {
+function scheduleSleep({ host, pin, mac, minutes, deepSleep = false }) {
   cancelSleepTimer();
   if (!minutes || minutes <= 0) return;
 
   const sleepAt = Date.now() + minutes * 60_000;
-  sleepTimerInfo = { sleepAt, minutes };
+  sleepTimerInfo = { sleepAt, minutes, deepSleep };
+  const mode = deepSleep ? 'deep' : 'light';
 
-  console.log(`   ⏰ Display will sleep in ${minutes} minutes`);
+  console.log(`   ⏰ Display will ${mode}-sleep in ${minutes} minutes`);
 
   sleepTimer = setTimeout(async () => {
     sleepTimer = null;
     sleepTimerInfo = null;
 
-    console.log('\n💤 Sleep timer fired — powering off display...');
+    console.log(`\n💤 Sleep timer fired — ${mode} sleep...`);
     try {
       const device = new Device({ host, mac: mac || undefined, pin });
       await device.connect();
-      await device.setNetworkStandby({ enabled: false }).catch(() => {});
-      console.log('   📡 Network standby disabled (true deep sleep)');
+      if (deepSleep) {
+        await device.setNetworkStandby({ enabled: false }).catch(() => {});
+        console.log('   📡 Network standby disabled (deep sleep — requires physical button to wake)');
+      } else {
+        await device.setNetworkStandby({ enabled: true }).catch(() => {});
+        console.log('   📡 Network standby kept ON (light sleep — can wake via network)');
+      }
       await device.setPower({ power: false });
       await device.disconnect();
-      console.log('   ✅ Display powered off — use WoL to wake\n');
+      console.log(`   ✅ Display powered off (${mode} sleep)\n`);
     } catch (err) {
       console.error(`   ❌ Failed to power off: ${err.message}\n`);
     }
@@ -202,7 +208,8 @@ app.post('/api/push', upload.single('image'), async (req, res) => {
     fs.writeFile(lastImagePath, imageBuffer, () => {});
 
     if (sleepAfter > 0) {
-      scheduleSleep({ host, pin, mac, minutes: sleepAfter });
+      const deepSleep = req.body.sleepMode === 'deep';
+      scheduleSleep({ host, pin, mac, minutes: sleepAfter, deepSleep });
     }
 
     res.json({ success: true, pushId });
@@ -258,47 +265,81 @@ app.get('/api/status', async (req, res) => {
 
 app.post('/api/wake', async (req, res) => {
   const { host, pin, mac } = req.body;
-  if (!mac) return res.status(400).json({ error: 'MAC address required for Wake-on-LAN' });
+  if (!host && !mac) return res.status(400).json({ error: 'host or MAC address required' });
 
   try {
     cancelSleepTimer();
-    const device = new Device({ host, mac, pin });
-    await device.wakeup();
-    console.log(`\n⏰ Wake-on-LAN sent to ${mac}`);
+    let method = 'unknown';
 
-    // Wait for device to boot, then re-enable network standby for MDC access
-    setTimeout(async () => {
+    // Try MDC power-on first (works if display is in light sleep with network standby on)
+    if (host && pin) {
       try {
-        const d = new Device({ host, mac, pin });
-        await d.connect({ timeout: 15_000 });
-        await d.setNetworkStandby({ enabled: true }).catch(() => {});
-        await d.disconnect();
-        console.log(`   📡 Network standby re-enabled on ${host}`);
+        console.log(`\n⏰ Trying MDC power-on for ${host}...`);
+        const device = new Device({ host, mac: mac || undefined, pin });
+        await device.connect({ timeout: 5_000 });
+        await device.setPower({ power: true });
+        await device.disconnect();
+        method = 'mdc';
+        console.log(`   ✅ Display woken via MDC power-on`);
       } catch {
-        // Device may not be ready yet — that's fine, push will handle it
+        console.log(`   ⚠️  MDC connection failed (display may be in deep sleep)`);
       }
-    }, 5_000);
+    }
 
-    res.json({ success: true });
+    // Fall back to WoL if MDC didn't work
+    if (method !== 'mdc' && mac) {
+      const device = new Device({ host, mac, pin });
+      await device.wakeup();
+      method = 'wol';
+      console.log(`   📡 Wake-on-LAN sent to ${mac}`);
+
+      if (host && pin) {
+        setTimeout(async () => {
+          try {
+            const d = new Device({ host, mac, pin });
+            await d.connect({ timeout: 15_000 });
+            await d.setNetworkStandby({ enabled: true }).catch(() => {});
+            await d.disconnect();
+            console.log(`   📡 Network standby re-enabled on ${host}`);
+          } catch {
+            // Device may not be ready yet
+          }
+        }, 5_000);
+      }
+    }
+
+    if (method === 'unknown') {
+      return res.status(400).json({ error: 'Could not wake display — no MAC for WoL and MDC failed' });
+    }
+
+    res.json({ success: true, method });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
 
 app.post('/api/sleep', async (req, res) => {
-  const { host, pin, mac } = req.body;
+  const { host, pin, mac, sleepMode } = req.body;
   if (!host || !pin) return res.status(400).json({ error: 'host and pin required' });
+
+  const deepSleep = sleepMode === 'deep';
+  const mode = deepSleep ? 'deep' : 'light';
 
   try {
     cancelSleepTimer();
     const device = new Device({ host, mac: mac || undefined, pin });
     await device.connect();
-    await device.setNetworkStandby({ enabled: false }).catch(() => {});
-    console.log(`\n💤 Network standby disabled for ${host}`);
+    if (deepSleep) {
+      await device.setNetworkStandby({ enabled: false }).catch(() => {});
+      console.log(`\n💤 Deep sleep: network standby disabled for ${host}`);
+    } else {
+      await device.setNetworkStandby({ enabled: true }).catch(() => {});
+      console.log(`\n💤 Light sleep: network standby kept ON for ${host}`);
+    }
     await device.setPower({ power: false });
     await device.disconnect();
-    console.log(`   Display powered off — use WoL to wake`);
-    res.json({ success: true });
+    console.log(`   Display powered off (${mode} sleep)`);
+    res.json({ success: true, mode });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }

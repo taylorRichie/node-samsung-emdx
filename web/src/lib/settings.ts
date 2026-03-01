@@ -1,10 +1,13 @@
 const STORAGE_KEY = "samsung-emdx-settings"
 
+export type SleepMode = "light" | "deep"
+
 export interface DisplaySettings {
   host: string
   pin: string
   mac: string
   sleepAfter: number
+  sleepMode: SleepMode
 }
 
 const DEFAULTS: DisplaySettings = {
@@ -12,6 +15,7 @@ const DEFAULTS: DisplaySettings = {
   pin: "",
   mac: "",
   sleepAfter: 20,
+  sleepMode: "light",
 }
 
 export function loadSettings(): DisplaySettings {
