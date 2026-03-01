@@ -8,8 +8,6 @@
     --foreground: 0 0% 98%;
     --card: 0 0% 6%;
     --card-foreground: 0 0% 98%;
-    --primary: 35 92% 60%;
-    --primary-foreground: 0 0% 5%;
     --secondary: 0 0% 12%;
     --secondary-foreground: 0 0% 98%;
     --muted: 0 0% 12%;
@@ -20,8 +18,48 @@
     --destructive-foreground: 0 0% 98%;
     --border: 0 0% 14.9%;
     --input: 0 0% 14.9%;
-    --ring: 35 92% 60%;
     --radius: 0.5rem;
+    --primary: 0 0% 98%;
+    --primary-foreground: 0 0% 9%;
+    --ring: 0 0% 83.1%;
+    --popover: 0 0% 3.9%;
+    --popover-foreground: 0 0% 98%;
+  }
+
+  [data-theme="blue"] {
+    --primary: 217.2 91.2% 59.8%;
+    --primary-foreground: 222.2 47.4% 11.2%;
+    --ring: 217.2 91.2% 59.8%;
+  }
+  [data-theme="green"] {
+    --primary: 142.1 76.2% 36.3%;
+    --primary-foreground: 355.7 100% 97.3%;
+    --ring: 142.1 76.2% 36.3%;
+  }
+  [data-theme="orange"] {
+    --primary: 24.6 95% 53.1%;
+    --primary-foreground: 60 9.1% 97.8%;
+    --ring: 24.6 95% 53.1%;
+  }
+  [data-theme="red"] {
+    --primary: 0 72.2% 50.6%;
+    --primary-foreground: 60 9.1% 97.8%;
+    --ring: 0 72.2% 50.6%;
+  }
+  [data-theme="rose"] {
+    --primary: 346.8 77.2% 49.8%;
+    --primary-foreground: 355.7 100% 97.3%;
+    --ring: 346.8 77.2% 49.8%;
+  }
+  [data-theme="violet"] {
+    --primary: 263.4 70% 50.4%;
+    --primary-foreground: 210 20% 98%;
+    --ring: 263.4 70% 50.4%;
+  }
+  [data-theme="yellow"] {
+    --primary: 47.9 95.8% 53.1%;
+    --primary-foreground: 26 83.3% 14.1%;
+    --ring: 47.9 95.8% 53.1%;
   }
 
   * {
@@ -39,6 +77,6 @@
 }
 
 .reactEasyCrop_CropArea {
-  border: 2px solid hsl(35 92% 60%) !important;
+  border: 2px solid hsl(var(--primary)) !important;
   box-shadow: 0 0 0 9999em hsl(0 0% 0% / 0.7) !important;
 }

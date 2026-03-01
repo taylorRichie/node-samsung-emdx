@@ -19,6 +19,7 @@
   "dependencies": {
     "@loxjs/node-local-ip": "^2.0.3",
     "express": "^5.1.0",
+    "fast-xml-parser": "^5.4.1",
     "get-port": "^7.1.0",
     "uuid": "^11.1.0",
     "yargs": "^17.7.2"
