@@ -303,9 +303,10 @@ async function pushImageToDisplay({ imageBuffer, host, pin, mac, displayId, last
   if (displayId) {
     const lastPath = getDisplayLastImagePath(displayId);
     if (!skipHistory) archiveLastImage(displayId, lastPath);
-    fs.writeFile(lastPath, lastImageBuffer ?? imageBuffer, () => {});
     noteStatus(displayId, {});
-    notePush(displayId);
+    // Broadcast the push only once the new image is on disk — otherwise
+    // clients refetch the thumbnail and get the previous bytes
+    fs.writeFile(lastPath, lastImageBuffer ?? imageBuffer, () => notePush(displayId));
   }
   return pushId;
 }
