@@ -74,14 +74,17 @@ export interface Schedule {
 
 /** Presentation override: how a queued image should be shown, not what it is */
 export interface QueueEdit {
-  /** How the art maps to the frame: crop fills, fit letterboxes, stretch distorts */
-  mode?: "crop" | "fit" | "stretch"
+  /** How the art maps to the frame; "transform" is the free-transform editor */
+  mode?: "crop" | "fit" | "stretch" | "transform"
   /** Rotation in degrees (90° steps + fine adjustment), applied first */
   rotation: number
   /** Crop rect in the rotated image's pixel space (react-easy-crop convention) */
   crop: { x: number; y: number; width: number; height: number } | null
   /** Fit mode: scale relative to contain-fit (values < 1 shrink the art) */
   zoom?: number
+  /** Transform mode: displayed image size as fractions of the frame size */
+  scaleX?: number
+  scaleY?: number
   /** Fit mode: image center offset from frame center, as fractions of frame size */
   offset?: { x: number; y: number }
   /** Letterbox / background color */

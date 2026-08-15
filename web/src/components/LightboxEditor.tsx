@@ -1,11 +1,8 @@
-import { useState, useCallback, useEffect, useRef } from "react"
+import { useState, useEffect, useRef, useCallback } from "react"
 import { createPortal } from "react-dom"
-import Cropper from "react-easy-crop"
-import type { Area, Point } from "react-easy-crop"
-import { Check, Crop, Expand, Loader2, Maximize2, Pipette, RotateCw, X, ZoomIn } from "lucide-react"
+import { Check, Loader2, Lock, LockOpen, Pipette, X } from "lucide-react"
 
 import { Button } from "@/components/ui/button"
-import { Slider } from "@/components/ui/slider"
 import type { QueueEdit } from "@/lib/types"
 
 export type LightboxResult = QueueEdit
@@ -14,7 +11,7 @@ interface LightboxEditorProps {
   open: boolean
   /** Source image (raw file orientation — overrides are applied on top) */
   imageUrl: string
-  /** Crop box aspect: the display frame's aspect */
+  /** Display frame aspect (w/h) */
   aspect: number
   title: string
   /** Existing override to resume from (queue items) */
@@ -25,282 +22,349 @@ interface LightboxEditorProps {
   onClose: () => void
 }
 
-type EditMode = "crop" | "fit" | "stretch"
+// Canvas workspace internals (hit-test + draw all happen in these units)
+const CW = 880
+const CH = 520
+// The display frame sits smaller than the workspace so the image can be
+// positioned "behind" it — visible pixels are what lands inside the frame
+const FRAME_H_RATIO = 0.72
+
+const HANDLE = 7        // corner node half-size (px)
+const GRAB = 12         // corner grab radius
+const ROTATE_ZONE = 30  // rotate ring outside a corner
+
+// Rotation cursor: small circular-arrows SVG
+const ROTATE_CURSOR = `url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='20' height='20' viewBox='0 0 24 24' fill='none' stroke='white' stroke-width='2.5' stroke-linecap='round'%3E%3Cpath d='M21 12a9 9 0 1 1-2.6-6.3'/%3E%3Cpath d='M21 3v5h-5'/%3E%3C/svg%3E") 10 10, alias`
+
+type DragKind =
+  | { kind: "move"; start: { x: number; y: number }; base: { x: number; y: number } }
+  | { kind: "scale"; corner: number; anchor: { x: number; y: number }; sign: { x: number; y: number } }
+  | { kind: "rotate"; lastAngle: number }
+
+interface Xform { cx: number; cy: number; w: number; h: number; rot: number }
 
 /**
- * Lightboxed presentation tuner. Three mapping modes:
- *  - Crop: pan/zoom the art to fill the frame (react-easy-crop)
- *  - Fit: whole art in-frame, draggable, letterboxed in a chosen color;
- *    zooming below 1× shrinks the art further into the letterbox
- *  - Stretch: force the art to the frame's aspect
- * Rotation is a 90° step + a fine slider. The letterbox color can be picked
- * or sampled from the image itself.
+ * Free-transform presentation tuner. The display frame is fixed in the middle
+ * of the workspace; the image floats behind it. Drag inside the image to
+ * position, drag corner nodes to scale (aspect lock → uniform), hover just
+ * outside a corner for rotation. Pixels outside the frame are discarded;
+ * uncovered frame pixels take the background color (sampleable via pipette).
  */
 export function LightboxEditor({ open, imageUrl, aspect, title, initial, applying, onApply, onClose }: LightboxEditorProps) {
-  const [mode, setMode] = useState<EditMode>("crop")
-  const [crop, setCrop] = useState<Point>({ x: 0, y: 0 })
-  const [cropZoom, setCropZoom] = useState(1)
-  const [areaPixels, setAreaPixels] = useState<Area | null>(null)
-
-  const [rotStep, setRotStep] = useState(0)   // 0/90/180/270
-  const [rotFine, setRotFine] = useState(0)   // -45..45
-  const rotation = ((rotStep + rotFine) % 360 + 360) % 360
-
-  const [fitZoom, setFitZoom] = useState(1)
-  const [offset, setOffset] = useState({ x: 0, y: 0 })
-  const [bg, setBg] = useState("#000000")
-  const [sampling, setSampling] = useState(false)
-
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const imgRef = useRef<HTMLImageElement | null>(null)
   const [imgReady, setImgReady] = useState(false)
-  const dragRef = useRef<{ startX: number; startY: number; base: { x: number; y: number } } | null>(null)
+  const [xf, setXf] = useState<Xform>({ cx: CW / 2, cy: CH / 2, w: 100, h: 100, rot: 0 })
+  const [bg, setBg] = useState("#000000")
+  const [aspectLock, setAspectLock] = useState(true)
+  const [sampling, setSampling] = useState(false)
+  const [cursor, setCursor] = useState("default")
+  const dragRef = useRef<DragKind | null>(null)
 
-  useEffect(() => {
-    if (!open) return
-    const init = initial ?? null
-    setMode((init?.mode as EditMode) ?? "crop")
-    setCrop({ x: 0, y: 0 })
-    setCropZoom(1)
-    setAreaPixels(init?.crop ?? null)
-    const rot = init?.rotation ?? 0
-    const step = Math.round(rot / 90) * 90
-    setRotStep(((step % 360) + 360) % 360)
-    setRotFine(rot - step > 45 ? rot - step - 360 : rot - step)
-    setFitZoom(init?.zoom ?? 1)
-    setOffset(init?.offset ?? { x: 0, y: 0 })
-    setBg(init?.bg ?? "#000000")
-    setSampling(false)
-  }, [open, imageUrl]) // eslint-disable-line react-hooks/exhaustive-deps
+  const frame = (() => {
+    const fh = CH * FRAME_H_RATIO
+    const fw = fh * aspect
+    return { x: (CW - fw) / 2, y: (CH - fh) / 2, w: fw, h: fh }
+  })()
 
-  // Load the source image once for the canvas preview
+  // ─── Init: load image, restore or default to contain-fit ─────────────────
   useEffect(() => {
     if (!open) return
     setImgReady(false)
+    setSampling(false)
+    setBg(initial?.bg ?? "#000000")
+    setAspectLock(true)
     const img = new Image()
     img.crossOrigin = "anonymous"
-    img.onload = () => { imgRef.current = img; setImgReady(true) }
-    img.src = imageUrl
-  }, [open, imageUrl])
-
-  // ─── Fit / Stretch canvas preview (mirrors the server's render math) ─────
-  useEffect(() => {
-    if (mode === "crop" || !imgReady || !canvasRef.current || !imgRef.current) return
-    const canvas = canvasRef.current
-    const FW = 720
-    const FH = Math.round(FW / aspect)
-    canvas.width = FW
-    canvas.height = FH
-    const ctx = canvas.getContext("2d")!
-    const img = imgRef.current
-
-    // Rotate into a bounding-box canvas (matches sharp's rotate output)
-    const rad = (rotation * Math.PI) / 180
-    const bw = Math.abs(img.width * Math.cos(rad)) + Math.abs(img.height * Math.sin(rad))
-    const bh = Math.abs(img.width * Math.sin(rad)) + Math.abs(img.height * Math.cos(rad))
-    const off = document.createElement("canvas")
-    off.width = Math.max(1, Math.round(bw))
-    off.height = Math.max(1, Math.round(bh))
-    const octx = off.getContext("2d")!
-    octx.fillStyle = bg
-    octx.fillRect(0, 0, off.width, off.height)
-    octx.translate(off.width / 2, off.height / 2)
-    octx.rotate(rad)
-    octx.drawImage(img, -img.width / 2, -img.height / 2)
-
-    ctx.fillStyle = bg
-    ctx.fillRect(0, 0, FW, FH)
-    if (mode === "stretch") {
-      ctx.drawImage(off, 0, 0, FW, FH)
-    } else {
-      const scale = Math.min(FW / off.width, FH / off.height) * fitZoom
-      const sw = off.width * scale
-      const sh = off.height * scale
-      ctx.drawImage(off, (FW - sw) / 2 + offset.x * FW, (FH - sh) / 2 + offset.y * FH, sw, sh)
+    img.onload = () => {
+      imgRef.current = img
+      const fh = CH * FRAME_H_RATIO
+      const fw = fh * aspect
+      const fx = (CW - fw) / 2, fy = (CH - fh) / 2
+      if (initial?.mode === "transform" && initial.offset && Number.isFinite(initial.scaleX)) {
+        const sx = initial.scaleX ?? 1
+        const sy = initial.scaleY ?? sx
+        setXf({
+          w: Math.max(8, sx * fw),
+          h: Math.max(8, sy * fh),
+          cx: fx + fw / 2 + (initial.offset.x ?? 0) * fw,
+          cy: fy + fh / 2 + (initial.offset.y ?? 0) * fh,
+          rot: initial.rotation ?? 0,
+        })
+      } else {
+        const s = Math.min(fw / img.width, fh / img.height)
+        setXf({ cx: fx + fw / 2, cy: fy + fh / 2, w: img.width * s, h: img.height * s, rot: 0 })
+      }
+      setImgReady(true)
     }
-  }, [mode, imgReady, rotation, fitZoom, offset, bg, aspect])
+    img.src = imageUrl
+  }, [open, imageUrl]) // eslint-disable-line react-hooks/exhaustive-deps
 
-  const onCropComplete = useCallback((_: Area, pixels: Area) => setAreaPixels(pixels), [])
+  // ─── Geometry helpers ────────────────────────────────────────────────────
+  const rad = (deg: number) => (deg * Math.PI) / 180
+  const toLocal = useCallback((px: number, py: number, t: Xform) => {
+    const c = Math.cos(-rad(t.rot)), s = Math.sin(-rad(t.rot))
+    const dx = px - t.cx, dy = py - t.cy
+    return { x: dx * c - dy * s, y: dx * s + dy * c }
+  }, [])
+  const toCanvas = useCallback((lx: number, ly: number, t: Xform) => {
+    const c = Math.cos(rad(t.rot)), s = Math.sin(rad(t.rot))
+    return { x: t.cx + lx * c - ly * s, y: t.cy + lx * s + ly * c }
+  }, [])
+  const corners = useCallback((t: Xform) => (
+    [[-1, -1], [1, -1], [1, 1], [-1, 1]].map(([sx, sy]) => toCanvas((sx * t.w) / 2, (sy * t.h) / 2, t))
+  ), [toCanvas])
 
-  // ─── Fit-mode dragging + color sampling ──────────────────────────────────
-  const canvasPos = (e: React.PointerEvent | React.MouseEvent) => {
+  // ─── Draw ────────────────────────────────────────────────────────────────
+  useEffect(() => {
+    const canvas = canvasRef.current
+    const img = imgRef.current
+    if (!open || !canvas || !imgReady || !img) return
+    canvas.width = CW
+    canvas.height = CH
+    const ctx = canvas.getContext("2d")!
+
+    // Workspace
+    ctx.fillStyle = "#141414"
+    ctx.fillRect(0, 0, CW, CH)
+
+    const drawImage = () => {
+      ctx.save()
+      ctx.translate(xf.cx, xf.cy)
+      ctx.rotate(rad(xf.rot))
+      ctx.drawImage(img, -xf.w / 2, -xf.h / 2, xf.w, xf.h)
+      ctx.restore()
+    }
+
+    // Outside the frame: ghosted image over workspace
+    ctx.globalAlpha = 0.3
+    drawImage()
+    ctx.globalAlpha = 1
+
+    // Inside the frame: background color, then full-strength image, clipped
+    ctx.save()
+    ctx.beginPath()
+    ctx.rect(frame.x, frame.y, frame.w, frame.h)
+    ctx.clip()
+    ctx.fillStyle = bg
+    ctx.fillRect(frame.x, frame.y, frame.w, frame.h)
+    drawImage()
+    ctx.restore()
+
+    // Frame border
+    ctx.strokeStyle = "rgba(255,255,255,0.85)"
+    ctx.lineWidth = 1.5
+    ctx.strokeRect(frame.x + 0.5, frame.y + 0.5, frame.w - 1, frame.h - 1)
+
+    // Image outline + corner nodes
+    const pts = corners(xf)
+    ctx.strokeStyle = "rgba(99,179,237,0.9)"
+    ctx.lineWidth = 1
+    ctx.beginPath()
+    pts.forEach((p, i) => i === 0 ? ctx.moveTo(p.x, p.y) : ctx.lineTo(p.x, p.y))
+    ctx.closePath()
+    ctx.stroke()
+    for (const p of pts) {
+      ctx.fillStyle = "#fff"
+      ctx.strokeStyle = "rgba(0,0,0,0.6)"
+      ctx.fillRect(p.x - HANDLE / 2, p.y - HANDLE / 2, HANDLE, HANDLE)
+      ctx.strokeRect(p.x - HANDLE / 2, p.y - HANDLE / 2, HANDLE, HANDLE)
+    }
+  }, [open, imgReady, xf, bg, frame.x, frame.y, frame.w, frame.h, corners])
+
+  // ─── Pointer interaction ─────────────────────────────────────────────────
+  const canvasPoint = (e: React.PointerEvent) => {
     const rect = canvasRef.current!.getBoundingClientRect()
     return {
-      x: ((e.clientX - rect.left) / rect.width),
-      y: ((e.clientY - rect.top) / rect.height),
+      x: ((e.clientX - rect.left) / rect.width) * CW,
+      y: ((e.clientY - rect.top) / rect.height) * CH,
     }
   }
 
+  const hitTest = (p: { x: number; y: number }) => {
+    const pts = corners(xf)
+    let nearest = -1, nd = Infinity
+    pts.forEach((c, i) => {
+      const d = Math.hypot(p.x - c.x, p.y - c.y)
+      if (d < nd) { nd = d; nearest = i }
+    })
+    const local = toLocal(p.x, p.y, xf)
+    const inside = Math.abs(local.x) <= xf.w / 2 && Math.abs(local.y) <= xf.h / 2
+    if (nd <= GRAB) return { type: "corner" as const, corner: nearest }
+    if (!inside && nd <= ROTATE_ZONE) return { type: "rotate" as const }
+    if (inside) return { type: "inside" as const }
+    return { type: "none" as const }
+  }
+
   const handlePointerDown = (e: React.PointerEvent) => {
-    if (!canvasRef.current) return
+    if (!imgReady || !canvasRef.current) return
+    const p = canvasPoint(e)
     if (sampling) {
-      const p = canvasPos(e)
       const ctx = canvasRef.current.getContext("2d")!
-      const px = ctx.getImageData(
-        Math.round(p.x * canvasRef.current.width),
-        Math.round(p.y * canvasRef.current.height), 1, 1).data
+      const px = ctx.getImageData(Math.round(p.x), Math.round(p.y), 1, 1).data
       setBg(`#${[px[0], px[1], px[2]].map(v => v.toString(16).padStart(2, "0")).join("")}`)
       setSampling(false)
       return
     }
-    if (mode !== "fit") return
-    dragRef.current = { startX: e.clientX, startY: e.clientY, base: offset };
-    (e.target as HTMLElement).setPointerCapture(e.pointerId)
+    const hit = hitTest(p)
+    if (hit.type === "corner") {
+      const pts = corners(xf)
+      const anchor = pts[(hit.corner + 2) % 4]
+      const la = toLocal(anchor.x, anchor.y, xf)
+      const lc = toLocal(pts[hit.corner].x, pts[hit.corner].y, xf)
+      dragRef.current = {
+        kind: "scale", corner: hit.corner, anchor,
+        sign: { x: Math.sign(lc.x - la.x) || 1, y: Math.sign(lc.y - la.y) || 1 },
+      }
+    } else if (hit.type === "rotate") {
+      dragRef.current = { kind: "rotate", lastAngle: Math.atan2(p.y - xf.cy, p.x - xf.cx) }
+    } else if (hit.type === "inside") {
+      dragRef.current = { kind: "move", start: p, base: { x: xf.cx, y: xf.cy } }
+    } else return
+    ;(e.target as HTMLElement).setPointerCapture(e.pointerId)
   }
+
   const handlePointerMove = (e: React.PointerEvent) => {
-    if (!dragRef.current || !canvasRef.current) return
-    const rect = canvasRef.current.getBoundingClientRect()
-    setOffset({
-      x: dragRef.current.base.x + (e.clientX - dragRef.current.startX) / rect.width,
-      y: dragRef.current.base.y + (e.clientY - dragRef.current.startY) / rect.height,
-    })
+    if (!imgReady || !canvasRef.current) return
+    const p = canvasPoint(e)
+    const drag = dragRef.current
+    if (!drag) {
+      if (sampling) { setCursor("crosshair"); return }
+      const hit = hitTest(p)
+      setCursor(
+        hit.type === "corner" ? "nwse-resize"
+        : hit.type === "rotate" ? ROTATE_CURSOR
+        : hit.type === "inside" ? "move"
+        : "default")
+      return
+    }
+    if (drag.kind === "move") {
+      setXf(t => ({ ...t, cx: drag.base.x + (p.x - drag.start.x), cy: drag.base.y + (p.y - drag.start.y) }))
+    } else if (drag.kind === "rotate") {
+      const angle = Math.atan2(p.y - xf.cy, p.x - xf.cx)
+      const delta = ((angle - drag.lastAngle) * 180) / Math.PI
+      dragRef.current = { ...drag, lastAngle: angle }
+      setXf(t => ({ ...t, rot: t.rot + delta }))
+    } else {
+      // Scale: anchor (opposite corner) stays fixed; pointer drives the
+      // dragged corner in image-local space
+      setXf(t => {
+        const la = toLocal(drag.anchor.x, drag.anchor.y, t)
+        const lp = toLocal(p.x, p.y, t)
+        let dw = (lp.x - la.x) * drag.sign.x
+        let dh = (lp.y - la.y) * drag.sign.y
+        dw = Math.max(12, dw)
+        dh = Math.max(12, dh)
+        let w = dw, h = dh
+        if (aspectLock) {
+          const s = Math.max(dw / t.w, dh / t.h)
+          w = t.w * s
+          h = t.h * s
+        }
+        const lcNew = { x: la.x + w * drag.sign.x, y: la.y + h * drag.sign.y }
+        const centerLocal = { x: (la.x + lcNew.x) / 2, y: (la.y + lcNew.y) / 2 }
+        const c = toCanvas(centerLocal.x, centerLocal.y, t)
+        return { ...t, w, h, cx: c.x, cy: c.y }
+      })
+    }
   }
+
   const handlePointerUp = () => { dragRef.current = null }
 
   if (!open) return null
 
-  const modeBtn = (m: EditMode, label: string, icon: React.ReactNode) => (
-    <button
-      key={m}
-      className={`flex-1 flex items-center justify-center gap-1.5 rounded-md px-2 py-1.5 text-xs font-medium transition-colors ${
-        mode === m ? "bg-accent text-foreground" : "text-muted-foreground hover:text-foreground"
-      }`}
-      onClick={() => setMode(m)}
-    >
-      {icon} {label}
-    </button>
-  )
-
+  // Result: normalized against the frame so rendering is resolution-independent
   const result: LightboxResult = {
-    mode,
-    rotation,
-    crop: mode === "crop" && areaPixels
-      ? { x: areaPixels.x, y: areaPixels.y, width: areaPixels.width, height: areaPixels.height }
-      : null,
-    zoom: fitZoom,
-    offset,
+    mode: "transform",
+    rotation: ((xf.rot % 360) + 360) % 360,
+    crop: null,
+    scaleX: xf.w / frame.w,
+    scaleY: xf.h / frame.h,
+    offset: {
+      x: (xf.cx - (frame.x + frame.w / 2)) / frame.w,
+      y: (xf.cy - (frame.y + frame.h / 2)) / frame.h,
+    },
     bg,
   }
 
   // Portal to <body>: the rail panels are CSS-transformed, which would
-  // otherwise turn this fixed overlay into a child of the panel box
+  // otherwise turn this fixed overlay into a child of the panel box.
+  // Deliberately NOT dismissed by outside clicks — Cancel/X only.
   return createPortal(
-    <div
-      className="fixed inset-0 z-[100] flex items-center justify-center bg-black/70 backdrop-blur-sm p-4"
-      onMouseDown={e => { if (e.target === e.currentTarget) onClose() }}
-    >
-      <div className="w-[min(92vw,680px)] rounded-xl border border-border bg-background shadow-2xl overflow-hidden">
+    <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/70 backdrop-blur-sm p-4">
+      <div className="w-[min(94vw,920px)] rounded-xl border border-border bg-background shadow-2xl overflow-hidden">
         {/* Header */}
         <div className="flex items-center justify-between px-4 py-2.5 border-b border-border">
           <div>
             <p className="text-sm font-semibold leading-tight">{title}</p>
-            <p className="text-[11px] text-muted-foreground">Presentation only — the image file is untouched</p>
+            <p className="text-[11px] text-muted-foreground">
+              Drag to position · corner nodes scale · hover outside a corner to rotate
+            </p>
           </div>
-          <div className="flex items-center gap-2">
-            <div className="flex items-center rounded-lg border border-border p-0.5 gap-0.5 w-[260px]">
-              {modeBtn("crop", "Crop", <Crop className="h-3.5 w-3.5" />)}
-              {modeBtn("fit", "Fit", <Maximize2 className="h-3.5 w-3.5" />)}
-              {modeBtn("stretch", "Stretch", <Expand className="h-3.5 w-3.5" />)}
-            </div>
-            <button className="flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground hover:text-foreground hover:bg-accent transition-colors" onClick={onClose}>
-              <X className="h-4 w-4" />
-            </button>
-          </div>
+          <button className="flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground hover:text-foreground hover:bg-accent transition-colors" onClick={onClose}>
+            <X className="h-4 w-4" />
+          </button>
         </div>
 
-        {/* Preview */}
-        <div className="relative h-[52vh] min-h-[320px] bg-black flex items-center justify-center">
-          {mode === "crop" ? (
-            <Cropper
-              image={imageUrl}
-              crop={crop}
-              zoom={cropZoom}
-              rotation={rotation}
-              aspect={aspect}
-              initialCroppedAreaPixels={initial?.mode !== "fit" && initial?.mode !== "stretch" ? initial?.crop ?? undefined : undefined}
-              onCropChange={setCrop}
-              onZoomChange={setCropZoom}
-              onCropComplete={onCropComplete}
-            />
-          ) : (
-            <canvas
-              ref={canvasRef}
-              className={`max-h-full max-w-full border border-border/50 ${sampling ? "cursor-crosshair" : mode === "fit" ? "cursor-grab active:cursor-grabbing" : ""}`}
-              style={{ aspectRatio: String(aspect), height: "100%" }}
-              onPointerDown={handlePointerDown}
-              onPointerMove={handlePointerMove}
-              onPointerUp={handlePointerUp}
-            />
+        {/* Workspace */}
+        <div className="relative bg-[#141414]">
+          <canvas
+            ref={canvasRef}
+            className="w-full block touch-none"
+            style={{ aspectRatio: `${CW} / ${CH}`, cursor }}
+            onPointerDown={handlePointerDown}
+            onPointerMove={handlePointerMove}
+            onPointerUp={handlePointerUp}
+          />
+          {!imgReady && (
+            <div className="absolute inset-0 flex items-center justify-center text-muted-foreground">
+              <Loader2 className="h-5 w-5 animate-spin" />
+            </div>
           )}
         </div>
 
         {/* Controls */}
-        <div className="space-y-2.5 px-4 py-3 border-t border-border">
-          <div className="flex items-center gap-3">
-            {/* Rotation: 90° step + fine slider */}
-            <Button
-              variant="outline" size="sm" className="gap-1.5 h-8 text-xs shrink-0 w-[104px]"
-              onClick={() => setRotStep(r => (r + 90) % 360)}
+        <div className="flex items-center gap-3 px-4 py-3 border-t border-border">
+          <button
+            className={`flex items-center gap-1.5 h-8 px-2.5 rounded-md border text-xs transition-colors ${
+              aspectLock
+                ? "border-primary/50 bg-primary/10 text-foreground"
+                : "border-border text-muted-foreground hover:text-foreground hover:bg-accent"
+            }`}
+            title={aspectLock ? "Aspect ratio locked — corner scaling is uniform" : "Aspect ratio unlocked — corners scale freely"}
+            onClick={() => setAspectLock(v => !v)}
+          >
+            {aspectLock ? <Lock className="h-3.5 w-3.5" /> : <LockOpen className="h-3.5 w-3.5" />}
+            Aspect ratio
+          </button>
+
+          <div className="flex items-center gap-1.5">
+            <span className="text-[11px] text-muted-foreground">Background color</span>
+            <input
+              type="color" value={bg}
+              onChange={e => setBg(e.target.value)}
+              className="h-7 w-9 rounded-md border border-border bg-transparent cursor-pointer p-0.5"
+              title="Background color"
+            />
+            <button
+              className={`flex h-7 w-7 items-center justify-center rounded-md border transition-colors ${
+                sampling ? "border-primary bg-primary/10 text-foreground" : "border-border text-muted-foreground hover:text-foreground hover:bg-accent"
+              }`}
+              title="Sample a color from the image"
+              onClick={() => setSampling(s => !s)}
             >
-              <RotateCw className="h-3.5 w-3.5" /> <span className="tabular-nums">{Math.round(rotation)}°</span>
-            </Button>
-            <div className="flex items-center gap-2 flex-1 min-w-0" title="Fine rotation">
-              <Slider value={[rotFine]} onValueChange={([v]) => setRotFine(v)} min={-45} max={45} step={0.5} />
-              <button
-                className="text-[10px] text-muted-foreground hover:text-foreground tabular-nums w-10 text-right shrink-0"
-                title="Reset fine rotation"
-                onClick={() => setRotFine(0)}
-              >
-                {rotFine > 0 ? "+" : ""}{rotFine.toFixed(1)}°
-              </button>
-            </div>
-            {/* Zoom */}
-            <div className="flex items-center gap-2 flex-1 min-w-0">
-              <ZoomIn className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
-              {mode === "crop" ? (
-                <Slider value={[cropZoom]} onValueChange={([v]) => setCropZoom(v)} min={1} max={3} step={0.05} />
-              ) : (
-                <Slider value={[fitZoom]} onValueChange={([v]) => setFitZoom(v)} min={0.1} max={3} step={0.05} disabled={mode === "stretch"} />
-              )}
-              <span className="text-xs text-muted-foreground tabular-nums w-9 text-right shrink-0">
-                {(mode === "crop" ? cropZoom : fitZoom).toFixed(1)}x
-              </span>
-            </div>
+              <Pipette className="h-3.5 w-3.5" />
+            </button>
+            {sampling && <span className="text-[11px] text-primary">Click the image…</span>}
           </div>
 
-          <div className="flex items-center gap-3">
-            {/* Letterbox color */}
-            <div className={`flex items-center gap-1.5 ${mode === "crop" ? "opacity-40 pointer-events-none" : ""}`}>
-              <span className="text-[11px] text-muted-foreground">Letterbox</span>
-              <input
-                type="color" value={bg}
-                onChange={e => setBg(e.target.value)}
-                className="h-7 w-9 rounded-md border border-border bg-transparent cursor-pointer p-0.5"
-                title="Letterbox color"
-              />
-              <button
-                className={`flex h-7 w-7 items-center justify-center rounded-md border transition-colors ${
-                  sampling ? "border-primary bg-primary/10 text-foreground" : "border-border text-muted-foreground hover:text-foreground hover:bg-accent"
-                }`}
-                title="Sample a color from the image"
-                onClick={() => setSampling(s => !s)}
-              >
-                <Pipette className="h-3.5 w-3.5" />
-              </button>
-              {sampling && <span className="text-[11px] text-primary">Click the image…</span>}
-            </div>
-            <div className="flex-1" />
-            <Button variant="outline" size="sm" className="h-8 text-xs" onClick={onClose} disabled={applying}>
-              Cancel
-            </Button>
-            <Button
-              size="sm" className="h-8 text-xs gap-1.5"
-              disabled={applying || (mode === "crop" && !areaPixels)}
-              onClick={() => onApply(result)}
-            >
-              {applying ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Check className="h-3.5 w-3.5" />} Apply
-            </Button>
-          </div>
+          <div className="flex-1" />
+          <Button variant="outline" size="sm" className="h-8 text-xs" onClick={onClose} disabled={applying}>
+            Cancel
+          </Button>
+          <Button size="sm" className="h-8 text-xs gap-1.5" disabled={applying || !imgReady} onClick={() => onApply(result)}>
+            {applying ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Check className="h-3.5 w-3.5" />} Apply
+          </Button>
         </div>
       </div>
     </div>,

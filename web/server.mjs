@@ -359,7 +359,33 @@ async function applyQueueEdit(buffer, edit, display = null) {
   if (!edit) return buffer;
   const bg = /^#[0-9a-fA-F]{6}$/.test(edit.bg || '') ? edit.bg : '#000000';
   const rot = Number.isFinite(edit.rotation) ? ((edit.rotation % 360) + 360) % 360 : 0;
-  const mode = ['fit', 'stretch'].includes(edit.mode) ? edit.mode : 'crop';
+  const mode = ['fit', 'stretch', 'transform'].includes(edit.mode) ? edit.mode : 'crop';
+
+  if (mode === 'transform') {
+    // Free transform: scale the source to (scaleX·FW × scaleY·FH), rotate,
+    // then place its center at frame center + offset — mirroring the editor
+    const [FW, FH] = frameDims(display);
+    const sX = Number.isFinite(edit.scaleX) && edit.scaleX > 0 ? edit.scaleX : 1;
+    const sY = Number.isFinite(edit.scaleY) && edit.scaleY > 0 ? edit.scaleY : sX;
+    const o = edit.offset && Number.isFinite(edit.offset.x) && Number.isFinite(edit.offset.y)
+      ? edit.offset : { x: 0, y: 0 };
+    const sw0 = Math.max(1, Math.round(FW * sX));
+    const sh0 = Math.max(1, Math.round(FH * sY));
+    let art = await sharp(buffer).resize(sw0, sh0, { fit: 'fill' }).toBuffer();
+    if (rot) art = await sharp(art).rotate(rot, { background: bg }).toBuffer();
+    const m = await sharp(art).metadata();
+    const left = Math.round(FW / 2 + o.x * FW - m.width / 2);
+    const top = Math.round(FH / 2 + o.y * FH - m.height / 2);
+    const sx2 = Math.max(0, -left), sy2 = Math.max(0, -top);
+    const vw = Math.min(m.width - sx2, FW - Math.max(0, left));
+    const vh = Math.min(m.height - sy2, FH - Math.max(0, top));
+    const canvas = sharp({ create: { width: FW, height: FH, channels: 3, background: bg } });
+    if (vw <= 0 || vh <= 0) return canvas.jpeg({ quality: 88 }).toBuffer();
+    const clipped = await sharp(art).extract({ left: sx2, top: sy2, width: vw, height: vh }).toBuffer();
+    return canvas
+      .composite([{ input: clipped, left: Math.max(0, left), top: Math.max(0, top) }])
+      .jpeg({ quality: 88 }).toBuffer();
+  }
 
   let buf = buffer;
   if (rot) buf = await sharp(buf).rotate(rot, { background: bg }).jpeg({ quality: 92 }).toBuffer();
@@ -381,6 +407,7 @@ async function applyQueueEdit(buffer, edit, display = null) {
   if (mode === 'stretch') {
     return sharp(buf).resize(FW, FH, { fit: 'fill' }).jpeg({ quality: 88 }).toBuffer();
   }
+
 
   // fit
   const meta = await sharp(buf).metadata();
@@ -1287,19 +1314,22 @@ app.get('/api/displays/:displayId/queue/image/:imageId', resolveDisplay, async (
 // Body: { mode?: 'crop'|'fit'|'stretch', rotation: degrees,
 //         crop: {x,y,width,height}|null, zoom?, offset?: {x,y}, bg?: '#rrggbb' }
 function sanitizeEdit(body) {
-  const { mode, rotation, crop, zoom, offset, bg } = body ?? {};
-  const m = ['fit', 'stretch'].includes(mode) ? mode : 'crop';
+  const { mode, rotation, crop, zoom, scaleX, scaleY, offset, bg } = body ?? {};
+  const m = ['fit', 'stretch', 'transform'].includes(mode) ? mode : 'crop';
   const rot = Number.isFinite(rotation) ? ((rotation % 360) + 360) % 360 : 0;
   const validCrop = crop && [crop.x, crop.y, crop.width, crop.height].every(Number.isFinite)
     ? { x: crop.x, y: crop.y, width: crop.width, height: crop.height }
     : null;
+  const clampScale = (v, fallback) => Number.isFinite(v) && v > 0 ? Math.min(v, 20) : fallback;
   const edit = {
     mode: m,
     rotation: rot,
     crop: m === 'crop' ? validCrop : null,
-    zoom: Number.isFinite(zoom) && zoom > 0 ? Math.min(zoom, 8) : 1,
+    zoom: clampScale(zoom, 1),
+    scaleX: clampScale(scaleX, 1),
+    scaleY: clampScale(scaleY, clampScale(scaleX, 1)),
     offset: offset && Number.isFinite(offset.x) && Number.isFinite(offset.y)
-      ? { x: Math.max(-1, Math.min(1, offset.x)), y: Math.max(-1, Math.min(1, offset.y)) }
+      ? { x: Math.max(-4, Math.min(4, offset.x)), y: Math.max(-4, Math.min(4, offset.y)) }
       : { x: 0, y: 0 },
     bg: /^#[0-9a-fA-F]{6}$/.test(bg || '') ? bg : '#000000',
   };
