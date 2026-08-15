@@ -177,6 +177,23 @@ export default function App() {
     }).catch(() => {})
   }
 
+  // Reorder the display list; `commit` persists (dragover reorders locally only)
+  const handleReorderDisplays = async (ids: string[], commit: boolean) => {
+    setDisplays(prev => {
+      const byId = new Map(prev.map(d => [d.id, d]))
+      const ordered = ids.map(id => byId.get(id)).filter((d): d is DisplayConfig => !!d)
+      for (const d of prev) if (!ordered.includes(d)) ordered.push(d)
+      return ordered
+    })
+    if (commit) {
+      await fetch("/api/displays/reorder", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ids }),
+      }).catch(() => {})
+    }
+  }
+
   const handlePatchScene = async (sceneId: string, patch: Partial<Scene>) => {
     setScenes(prev => prev.map(s => s.id === sceneId ? { ...s, ...patch } : s))
     await fetch(`/api/scenes/${sceneId}`, {
@@ -238,6 +255,7 @@ export default function App() {
         onSceneDelete={handleSceneDelete}
         onAddDisplay={() => setAddDialogOpen(true)}
         listOpen={listOpen}
+        onReorderDisplays={handleReorderDisplays}
       />
 
       {/* Floating header (top-left) */}

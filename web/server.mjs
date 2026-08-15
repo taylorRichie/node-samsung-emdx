@@ -562,6 +562,18 @@ app.post('/api/displays', (req, res) => {
   res.json(display);
 });
 
+// Registered before /api/displays/:id so "reorder" isn't captured as an id
+app.put('/api/displays/reorder', (req, res) => {
+  const ids = req.body?.ids;
+  if (!Array.isArray(ids)) return res.status(400).json({ error: 'ids array required' });
+  const displays = loadDisplays();
+  const byId = new Map(displays.map(d => [d.id, d]));
+  const ordered = ids.map(id => byId.get(id)).filter(Boolean);
+  for (const d of displays) if (!ordered.includes(d)) ordered.push(d);
+  saveDisplays(ordered);
+  res.json({ success: true });
+});
+
 app.put('/api/displays/:id', (req, res) => {
   const displays = loadDisplays();
   const idx = displays.findIndex(d => d.id === req.params.id);

@@ -14,6 +14,8 @@ interface DisplayListPanelProps {
   onGoto: (displayId: string) => void
   onSettings: (displayId: string) => void
   onAdd: () => void
+  /** Reorder rows; commit=false while dragging, true on drop (persists) */
+  onReorder: (ids: string[], commit: boolean) => void
 }
 
 function Thumb({ display, ts }: { display: DisplayConfig; ts: number }) {
@@ -81,9 +83,25 @@ function StatusRow({ status }: { status: DisplayStatus | null }) {
 }
 
 /** Floating panel on the left listing every display with quick goto/wake. */
-export function DisplayListPanel({ displays, statuses, lastImageTimestamps, selectedId, onGoto, onSettings, onAdd }: DisplayListPanelProps) {
+export function DisplayListPanel({ displays, statuses, lastImageTimestamps, selectedId, onGoto, onSettings, onAdd, onReorder }: DisplayListPanelProps) {
   const [wakingId, setWakingId] = useState<string | null>(null)
+  const [dragIdx, setDragIdx] = useState<number | null>(null)
   const iconBtn = "flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-muted-foreground hover:text-foreground hover:bg-accent transition-colors"
+
+  const handleDragOver = (e: React.DragEvent, idx: number) => {
+    e.preventDefault()
+    if (dragIdx === null || dragIdx === idx) return
+    const ids = displays.map(d => d.id)
+    const [moved] = ids.splice(dragIdx, 1)
+    ids.splice(idx, 0, moved)
+    onReorder(ids, false)
+    setDragIdx(idx)
+  }
+  const handleDragEnd = () => {
+    if (dragIdx === null) return
+    setDragIdx(null)
+    onReorder(displays.map(d => d.id), true)
+  }
 
   const handleWake = async (d: DisplayConfig) => {
     setWakingId(d.id)
@@ -98,18 +116,22 @@ export function DisplayListPanel({ displays, statuses, lastImageTimestamps, sele
   }
   return (
     <div
-      className="absolute left-3 md:left-4 top-[72px] z-[70] w-60 rounded-xl border border-border bg-background/70 backdrop-blur-md shadow-lg p-1.5"
+      className="absolute left-3 md:left-4 top-[72px] z-[70] w-80 rounded-xl border border-border bg-background/70 backdrop-blur-md shadow-lg p-1.5"
       onMouseDown={e => e.stopPropagation()}
       onClick={e => e.stopPropagation()}
       onDoubleClick={e => e.stopPropagation()}
     >
       <div className="flex flex-col gap-0.5">
-        {displays.map(d => (
+        {displays.map((d, i) => (
           <div
             key={d.id}
+            draggable
+            onDragStart={() => setDragIdx(i)}
+            onDragOver={e => handleDragOver(e, i)}
+            onDragEnd={handleDragEnd}
             className={`group flex items-center gap-2 rounded-lg px-1.5 py-1 transition-colors cursor-pointer ${
               d.id === selectedId ? "bg-accent ring-1 ring-primary/50" : "hover:bg-accent/50"
-            }`}
+            } ${dragIdx === i ? "opacity-60" : ""}`}
             onClick={() => onSettings(d.id)}
           >
             <Thumb display={d} ts={lastImageTimestamps[d.id] || 0} />

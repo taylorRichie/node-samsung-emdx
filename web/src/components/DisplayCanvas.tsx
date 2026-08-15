@@ -29,6 +29,7 @@ interface DisplayCanvasProps {
   onAddDisplay: () => void
   /** Show/hide the left display list panel (toggled from the app header) */
   listOpen: boolean
+  onReorderDisplays: (ids: string[], commit: boolean) => void
 }
 
 const MIN_ZOOM = 0.15
@@ -47,7 +48,7 @@ type PanDrag = { startX: number; startY: number; origX: number; origY: number }
 
 export function DisplayCanvas({
   displays, scenes, statuses, lastImageTimestamps, settingsOpenId,
-  onOpenSettings, onActiveDisplayChange, onPatchDisplay, onPatchScene, onSceneUpload, onSceneDelete, onAddDisplay, listOpen,
+  onOpenSettings, onActiveDisplayChange, onPatchDisplay, onPatchScene, onSceneUpload, onSceneDelete, onAddDisplay, listOpen, onReorderDisplays,
 }: DisplayCanvasProps) {
   const containerRef = useRef<HTMLDivElement>(null)
   const [view, setView] = useState<View>({ x: 0, y: 0, zoom: 1 })
@@ -1159,6 +1160,7 @@ export function DisplayCanvas({
           onGoto={gotoDisplay}
           onSettings={id => { setSelectedId(id); onOpenSettings(id) }}
           onAdd={onAddDisplay}
+          onReorder={onReorderDisplays}
         />
       )}
 
