@@ -48,9 +48,11 @@ interface QueuePanelProps {
   display: DisplayConfig
   status: DisplayStatus | null
   onDisplayUpdated: () => void
+  /** Bumped when something external (e.g. the gallery) modifies the queue */
+  refreshKey?: number
 }
 
-export function QueuePanel({ open, display, status, onDisplayUpdated }: QueuePanelProps) {
+export function QueuePanel({ open, display, status, onDisplayUpdated, refreshKey }: QueuePanelProps) {
   const api = `/api/displays/${display.id}`
 
   const [queue, setQueue] = useState<QueueData>({ images: [], currentIndex: 0 })
@@ -140,7 +142,7 @@ export function QueuePanel({ open, display, status, onDisplayUpdated }: QueuePan
     if (!open) return
     setVisible(PAGE)
     fetchQueue()
-  }, [open, display.id, fetchQueue])
+  }, [open, display.id, fetchQueue, refreshKey])
 
   useEffect(() => {
     if (open) fetchMeta(queue.images.length)

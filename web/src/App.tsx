@@ -11,6 +11,8 @@ import { Label } from "@/components/ui/label"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { DisplayCanvas } from "@/components/DisplayCanvas"
 import { RightRail, type RailPanel } from "@/components/RightRail"
+import { LeftRail } from "@/components/LeftRail"
+import { GalleryPanel } from "@/components/GalleryPanel"
 import { PropertiesPanel } from "@/components/PropertiesPanel"
 import { QueuePanel } from "@/components/QueuePanel"
 import type { DisplayConfig, DisplayStatus, DiscoveredDisplay, Scene } from "@/lib/types"
@@ -52,8 +54,14 @@ export default function App() {
 
   // Add display dialog
   const [addDialogOpen, setAddDialogOpen] = useState(false)
-  // Display list panel visibility (toggled from the header icon)
+  // Left rail panels: display list + gallery (one at a time — they share the slot)
   const [listOpen, setListOpen] = useState(true)
+  const [galleryOpen, setGalleryOpen] = useState(false)
+  const [queueRefresh, setQueueRefresh] = useState(0)
+  const handleLeftPick = (panel: "displays" | "gallery") => {
+    if (panel === "displays") { setListOpen(v => !v); setGalleryOpen(false) }
+    else { setGalleryOpen(v => !v); setListOpen(false) }
+  }
   const [newName, setNewName] = useState("")
   const [newHost, setNewHost] = useState("")
   const [newPin, setNewPin] = useState("")
@@ -276,15 +284,7 @@ export default function App() {
       {/* Floating header (top-left) */}
       <div className="pointer-events-none absolute top-0 left-0 right-0 flex items-start justify-between p-3 md:p-4">
         <div className="pointer-events-auto flex items-center gap-3 rounded-xl border border-border bg-background/70 backdrop-blur-md px-3 py-2 shadow-lg">
-          <button
-            className={`flex h-8 w-8 -ml-1 items-center justify-center rounded-md transition-colors ${
-              listOpen ? "text-primary" : "text-muted-foreground hover:text-primary"
-            } hover:bg-accent`}
-            title={listOpen ? "Hide display list" : "Show display list"}
-            onClick={() => setListOpen(v => !v)}
-          >
-            <Monitor className="h-6 w-6" />
-          </button>
+          <Monitor className="h-6 w-6 text-primary" />
           <div>
             <h1 className="text-base font-bold tracking-tight leading-none">Samsung EMDX</h1>
             <p className="text-[11px] text-muted-foreground mt-0.5">
@@ -316,6 +316,16 @@ export default function App() {
         </div>
       </div>
 
+      {/* Left rail: display list + gallery library */}
+      <LeftRail displaysOpen={listOpen} galleryOpen={galleryOpen} onPick={handleLeftPick} />
+      <GalleryPanel
+        open={galleryOpen}
+        displays={displays}
+        lastImageTimestamps={lastImageTimestamps}
+        activeQueueDisplayId={railPanel === "queue" && activeDisplay ? activeDisplay.id : null}
+        onQueued={() => setQueueRefresh(n => n + 1)}
+      />
+
       {/* Right rail: vertical toolbar + slide-in panels */}
       <RightRail
         disabled={!activeDisplay}
@@ -338,6 +348,7 @@ export default function App() {
             display={activeDisplay}
             status={statuses[activeDisplay.id] ?? null}
             onDisplayUpdated={handleDisplayUpdated}
+            refreshKey={queueRefresh}
           />
         </>
       )}

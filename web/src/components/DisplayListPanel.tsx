@@ -118,7 +118,7 @@ export function DisplayListPanel({ displays, statuses, lastImageTimestamps, sele
   }
   return (
     <div
-      className="absolute left-3 md:left-4 top-[72px] z-[70] w-80 rounded-xl border border-border bg-background/70 backdrop-blur-md shadow-lg p-1.5"
+      className="absolute left-[60px] md:left-[64px] top-[72px] z-[70] w-80 rounded-xl border border-border bg-background/70 backdrop-blur-md shadow-lg p-1.5"
       onMouseDown={e => e.stopPropagation()}
       onClick={e => e.stopPropagation()}
       onDoubleClick={e => e.stopPropagation()}

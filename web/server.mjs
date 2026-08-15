@@ -345,23 +345,66 @@ async function pushPresentation(displayId, { host, pin, mac }, presentationBuffe
   return pushImageToDisplay({ imageBuffer: payload, host, pin, mac, displayId, lastImageBuffer: presentationBuffer, skipHistory });
 }
 
-// Per-queue-image presentation override: rotate (90° steps), then crop in the
-// rotated image's pixel space (matches react-easy-crop's convention).
-async function applyQueueEdit(buffer, edit) {
+// Presentation override renderer. Three modes:
+//  - crop (default/legacy): rotate, then crop in the rotated image's pixel
+//    space (react-easy-crop convention)
+//  - fit: rotate, scale (contain × zoom — zoom < 1 shrinks the art), position
+//    by normalized offset, letterbox with `bg`
+//  - stretch: rotate, then force-fill the display frame ignoring aspect
+function frameDims(display) {
+  return frameOrientation(display) === 'landscape' ? [2560, 1440] : [1440, 2560];
+}
+
+async function applyQueueEdit(buffer, edit, display = null) {
   if (!edit) return buffer;
+  const bg = /^#[0-9a-fA-F]{6}$/.test(edit.bg || '') ? edit.bg : '#000000';
+  const rot = Number.isFinite(edit.rotation) ? ((edit.rotation % 360) + 360) % 360 : 0;
+  const mode = ['fit', 'stretch'].includes(edit.mode) ? edit.mode : 'crop';
+
   let buf = buffer;
-  const rot = [90, 180, 270].includes(edit.rotation) ? edit.rotation : 0;
-  if (rot) buf = await sharp(buf).rotate(rot).jpeg({ quality: 92 }).toBuffer();
-  const c = edit.crop;
-  if (c && [c.x, c.y, c.width, c.height].every(Number.isFinite)) {
-    const meta = await sharp(buf).metadata();
-    const left = Math.max(0, Math.min(Math.round(c.x), meta.width - 1));
-    const top = Math.max(0, Math.min(Math.round(c.y), meta.height - 1));
-    const width = Math.max(1, Math.min(Math.round(c.width), meta.width - left));
-    const height = Math.max(1, Math.min(Math.round(c.height), meta.height - top));
-    buf = await sharp(buf).extract({ left, top, width, height }).jpeg({ quality: 88 }).toBuffer();
+  if (rot) buf = await sharp(buf).rotate(rot, { background: bg }).jpeg({ quality: 92 }).toBuffer();
+
+  if (mode === 'crop') {
+    const c = edit.crop;
+    if (c && [c.x, c.y, c.width, c.height].every(Number.isFinite)) {
+      const meta = await sharp(buf).metadata();
+      const left = Math.max(0, Math.min(Math.round(c.x), meta.width - 1));
+      const top = Math.max(0, Math.min(Math.round(c.y), meta.height - 1));
+      const width = Math.max(1, Math.min(Math.round(c.width), meta.width - left));
+      const height = Math.max(1, Math.min(Math.round(c.height), meta.height - top));
+      buf = await sharp(buf).extract({ left, top, width, height }).jpeg({ quality: 88 }).toBuffer();
+    }
+    return buf;
   }
-  return buf;
+
+  const [FW, FH] = frameDims(display);
+  if (mode === 'stretch') {
+    return sharp(buf).resize(FW, FH, { fit: 'fill' }).jpeg({ quality: 88 }).toBuffer();
+  }
+
+  // fit
+  const meta = await sharp(buf).metadata();
+  const zoom = Number.isFinite(edit.zoom) && edit.zoom > 0 ? edit.zoom : 1;
+  const off = edit.offset && Number.isFinite(edit.offset.x) && Number.isFinite(edit.offset.y)
+    ? edit.offset : { x: 0, y: 0 };
+  const scale = Math.min(FW / meta.width, FH / meta.height) * zoom;
+  const sw = Math.max(1, Math.round(meta.width * scale));
+  const sh = Math.max(1, Math.round(meta.height * scale));
+  const left = Math.round((FW - sw) / 2 + off.x * FW);
+  const top = Math.round((FH - sh) / 2 + off.y * FH);
+
+  // Clip the scaled art to its intersection with the frame before compositing
+  const sx = Math.max(0, -left), sy = Math.max(0, -top);
+  const vw = Math.min(sw - sx, FW - Math.max(0, left));
+  const vh = Math.min(sh - sy, FH - Math.max(0, top));
+  const canvas = sharp({ create: { width: FW, height: FH, channels: 3, background: bg } });
+  if (vw <= 0 || vh <= 0) return canvas.jpeg({ quality: 88 }).toBuffer();
+
+  const scaled = await sharp(buf).resize(sw, sh, { fit: 'fill' })
+    .extract({ left: sx, top: sy, width: vw, height: vh }).toBuffer();
+  return canvas
+    .composite([{ input: scaled, left: Math.max(0, left), top: Math.max(0, top) }])
+    .jpeg({ quality: 88 }).toBuffer();
 }
 
 // Cover-fit an image to the display's frame aspect: fill and crop (centered)
@@ -408,7 +451,7 @@ async function pushNextQueueImage(displayId, { host, pin, mac }, imageId = null)
   }
 
   let imageBuffer = fs.readFileSync(imgPath);
-  imageBuffer = await applyQueueEdit(imageBuffer, entry.edit);
+  imageBuffer = await applyQueueEdit(imageBuffer, entry.edit, display);
 
   await pushPresentation(displayId, { host, pin, mac }, imageBuffer);
 
@@ -1233,7 +1276,7 @@ app.get('/api/displays/:displayId/queue/image/:imageId', resolveDisplay, async (
   // with the entry's editedAt when requesting)
   if (req.query.edited === '1' && entry.edit) {
     try {
-      const buf = await applyQueueEdit(fs.readFileSync(imgPath), entry.edit);
+      const buf = await applyQueueEdit(fs.readFileSync(imgPath), entry.edit, req.display);
       return res.send(buf);
     } catch { /* fall through to the raw file */ }
   }
@@ -1241,21 +1284,132 @@ app.get('/api/displays/:displayId/queue/image/:imageId', resolveDisplay, async (
 });
 
 // Presentation override for a queued image: how it should be displayed.
-// Body: { rotation: 0|90|180|270, crop: {x,y,width,height}|null }
+// Body: { mode?: 'crop'|'fit'|'stretch', rotation: degrees,
+//         crop: {x,y,width,height}|null, zoom?, offset?: {x,y}, bg?: '#rrggbb' }
+function sanitizeEdit(body) {
+  const { mode, rotation, crop, zoom, offset, bg } = body ?? {};
+  const m = ['fit', 'stretch'].includes(mode) ? mode : 'crop';
+  const rot = Number.isFinite(rotation) ? ((rotation % 360) + 360) % 360 : 0;
+  const validCrop = crop && [crop.x, crop.y, crop.width, crop.height].every(Number.isFinite)
+    ? { x: crop.x, y: crop.y, width: crop.width, height: crop.height }
+    : null;
+  const edit = {
+    mode: m,
+    rotation: rot,
+    crop: m === 'crop' ? validCrop : null,
+    zoom: Number.isFinite(zoom) && zoom > 0 ? Math.min(zoom, 8) : 1,
+    offset: offset && Number.isFinite(offset.x) && Number.isFinite(offset.y)
+      ? { x: Math.max(-1, Math.min(1, offset.x)), y: Math.max(-1, Math.min(1, offset.y)) }
+      : { x: 0, y: 0 },
+    bg: /^#[0-9a-fA-F]{6}$/.test(bg || '') ? bg : '#000000',
+  };
+  const isNoop = m === 'crop' && rot === 0 && !validCrop;
+  return isNoop ? null : edit;
+}
+
 app.put('/api/displays/:displayId/queue/:imageId/edit', resolveDisplay, (req, res) => {
   const displayId = req.params.displayId;
   const queue = loadDisplayQueue(displayId);
   const entry = queue.images.find(img => img.id === req.params.imageId);
   if (!entry) return res.status(404).json({ error: 'Not found' });
-  const { rotation, crop } = req.body ?? {};
-  const rot = [0, 90, 180, 270].includes(rotation) ? rotation : 0;
-  const validCrop = crop && [crop.x, crop.y, crop.width, crop.height].every(Number.isFinite)
-    ? { x: crop.x, y: crop.y, width: crop.width, height: crop.height }
-    : null;
-  entry.edit = (rot === 0 && !validCrop) ? null : { rotation: rot, crop: validCrop };
+  entry.edit = sanitizeEdit(req.body);
   entry.editedAt = new Date().toISOString();
   saveDisplayQueue(displayId, queue);
   res.json({ success: true, edit: entry.edit });
+});
+
+// Re-render the CURRENT image with an edit and push it (properties panel's
+// tune flow) — the edit is applied server-side against last-push.jpg
+app.post('/api/displays/:displayId/push-edit', resolveDisplay, async (req, res) => {
+  const displayId = req.params.displayId;
+  const { host, pin, mac } = req.display;
+  if (!host || !pin) return res.status(400).json({ error: 'Display has no host/pin' });
+  const lastPath = getDisplayLastImagePath(displayId);
+  if (!fs.existsSync(lastPath)) return res.status(404).json({ error: 'No current image' });
+  try {
+    const edit = sanitizeEdit(req.body?.edit ?? req.body);
+    const rendered = await applyQueueEdit(fs.readFileSync(lastPath), edit, req.display);
+    cancelSleepTimer(displayId);
+    stopWakePoller(displayId);
+    await pushPresentation(displayId, { host, pin, mac }, rendered);
+    const sleepAfter = req.display.sleepAfter ?? 20;
+    const mode = loadDisplayMode(displayId);
+    if (sleepAfter > 0) scheduleSleep(displayId, { host, pin, mac, minutes: sleepAfter, sleepMode: mode === 'scheduled' ? 'scheduled' : 'manual' });
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ─── Gallery library ────────────────────────────────────────────────────────
+// Server-side artwork library at web/.gallery/<category>/<slug>.jpg — the
+// source pool the UI browses and queues from. Thumbnails are generated on
+// demand and cached on disk.
+
+const GALLERY_DIR = path.join(__dirname, '.gallery');
+const GALLERY_THUMBS = path.join(__dirname, '.gallery-thumbs');
+const galleryPart = (s) => typeof s === 'string' && /^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(s) && !s.includes('..');
+
+function galleryTitle(file) {
+  return file.replace(/\.jpg$/i, '').split('-').map(w => w ? w[0].toUpperCase() + w.slice(1) : w).join(' ');
+}
+
+app.get('/api/gallery', (_req, res) => {
+  const items = [];
+  let cats = [];
+  try { cats = fs.readdirSync(GALLERY_DIR).filter(c => galleryPart(c) && fs.statSync(path.join(GALLERY_DIR, c)).isDirectory()); }
+  catch { /* no library yet */ }
+  for (const cat of cats.sort()) {
+    for (const f of fs.readdirSync(path.join(GALLERY_DIR, cat)).filter(f => /\.jpg$/i.test(f)).sort()) {
+      items.push({ id: `${cat}/${f}`, category: cat, file: f, title: galleryTitle(f) });
+    }
+  }
+  res.json({ items });
+});
+
+app.get('/api/gallery/image/:category/:file', async (req, res) => {
+  const { category, file } = req.params;
+  if (!galleryPart(category) || !galleryPart(file)) return res.status(400).end();
+  const imgPath = path.join(GALLERY_DIR, category, file);
+  if (!fs.existsSync(imgPath)) return res.status(404).end();
+  res.header('Content-Type', 'image/jpeg');
+  res.header('Cache-Control', 'public, max-age=604800');
+  const w = parseInt(req.query.w, 10);
+  if (Number.isFinite(w) && w > 0 && w <= 1200) {
+    const thumbPath = path.join(GALLERY_THUMBS, category, `${file}.w${w}.jpg`);
+    try {
+      if (!fs.existsSync(thumbPath)) {
+        fs.mkdirSync(path.dirname(thumbPath), { recursive: true });
+        await sharp(imgPath).resize({ width: w }).jpeg({ quality: 78 }).toFile(thumbPath);
+      }
+      return fs.createReadStream(thumbPath).pipe(res);
+    } catch { /* fall through to the original */ }
+  }
+  fs.createReadStream(imgPath).pipe(res);
+});
+
+// Bulk add gallery items to a display's queue. Body: { ids: ["cat/file.jpg"] }
+app.post('/api/displays/:displayId/queue/from-gallery', resolveDisplay, (req, res) => {
+  const displayId = req.params.displayId;
+  const ids = Array.isArray(req.body?.ids) ? req.body.ids : [];
+  if (!ids.length) return res.status(400).json({ error: 'ids array required' });
+  ensureDisplayDir(displayId);
+  const queue = loadDisplayQueue(displayId);
+  let added = 0;
+  for (const gid of ids) {
+    const [category, file] = String(gid).split('/');
+    if (!galleryPart(category) || !galleryPart(file)) continue;
+    const src = path.join(GALLERY_DIR, category, file);
+    if (!fs.existsSync(src)) continue;
+    const id = randomUUID();
+    const filename = `${id}.jpg`;
+    fs.copyFileSync(src, path.join(displayImagesDir(displayId), filename));
+    queue.images.push({ id, filename, addedAt: new Date().toISOString(), edit: null, source: gid });
+    added++;
+  }
+  saveDisplayQueue(displayId, queue);
+  console.log(`📋 [${displayId.slice(0, 8)}] Queue: +${added} from gallery (${queue.images.length} total)`);
+  res.json({ success: true, added, count: queue.images.length });
 });
 
 // ─── Per-display: Schedule ──────────────────────────────────────────────────

@@ -11,7 +11,6 @@ import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { RailPanelShell } from "@/components/RightRail"
 import { LightboxEditor, displayAspect, type LightboxResult } from "@/components/LightboxEditor"
-import { getCroppedImageBlob } from "@/lib/crop-image"
 import type {
   DisplayConfig, DisplayStatus, SleepMode,
 } from "@/lib/types"
@@ -166,15 +165,21 @@ export function PropertiesPanel({
     } finally { setPushing(false) }
   }
 
-  // Lightbox tune of the current image: crop/rotate the presentation, re-push
+  // Lightbox tune of the current image: the server re-renders last-push.jpg
+  // with the edit (crop/fit/stretch, rotation, letterbox) and pushes it
   const handleEditorApply = async (result: LightboxResult) => {
-    if (!lastImageUrl) return
     setEditorApplying(true)
     try {
-      const blob = await getCroppedImageBlob(lastImageUrl, result.crop, result.rotation, 100, 100, 0)
-      await pushBlob(blob)
+      const res = await fetch(`${api}/push-edit`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ edit: result }),
+      })
+      const data = await res.json().catch(() => ({})) as { error?: string }
+      if (!res.ok) throw new Error(data.error || "Push failed")
       toast.success("Presentation updated and pushed")
       setEditorOpen(false)
+      onDisplayUpdated()
+      setTimeout(fetchStatus, 2000)
     } catch (err) {
       toast.error(`Failed: ${err instanceof Error ? err.message : "Unknown error"}`)
     } finally { setEditorApplying(false) }
