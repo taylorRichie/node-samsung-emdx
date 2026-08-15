@@ -148,6 +148,13 @@ export function GalleryPanel({ open, displays, lastImageTimestamps, activeQueueD
                   }`}
                   title={`${item.title} — ${prettyCategory(item.category)}`}
                   onClick={() => toggle(item.id)}
+                  draggable
+                  onDragStart={e => {
+                    // Dragging a selected tile carries the whole selection
+                    const ids = selected.has(item.id) ? [...selected] : [item.id]
+                    e.dataTransfer.setData("application/x-gallery-items", JSON.stringify(ids))
+                    e.dataTransfer.effectAllowed = "copy"
+                  }}
                 >
                   <img
                     src={`/api/gallery/image/${item.id}?w=300`}

@@ -18,6 +18,8 @@ import { displayState } from "@/lib/displayState"
 import { scheduleSentence, to24h } from "@/lib/schedule"
 
 const PAGE = 24
+/** Drag payload type set by GalleryPanel tiles */
+const GALLERY_MIME = "application/x-gallery-items"
 
 function formatTime12h(d: Date) {
   const ampm = d.getHours() >= 12 ? "PM" : "AM"
@@ -166,6 +168,24 @@ export function QueuePanel({ open, display, status, onDisplayUpdated, refreshKey
       toast.error(err instanceof Error ? err.message : "Failed to add images")
       fetchQueue()
     } finally { setUploading(false) }
+  }
+
+  // Drop from the gallery panel: payload is a JSON array of gallery item ids
+  const addFromGallery = async (json: string) => {
+    try {
+      const ids = JSON.parse(json) as string[]
+      if (!Array.isArray(ids) || ids.length === 0) return
+      const res = await fetch(`${api}/queue/from-gallery`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ids }),
+      })
+      const data = await res.json().catch(() => ({})) as { added?: number; error?: string }
+      if (!res.ok) throw new Error(data.error || "Failed to add")
+      toast.success(`Added ${data.added ?? ids.length} image${(data.added ?? ids.length) === 1 ? "" : "s"} from the gallery`)
+      fetchQueue()
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Failed to add from gallery")
+    }
   }
 
   // ─── Reorder (drag in play order; persisted with currentIndex reset to 0) ─
@@ -385,9 +405,21 @@ export function QueuePanel({ open, display, status, onDisplayUpdated, refreshKey
         ref={scrollRef}
         className={`flex-1 overflow-y-auto p-3 ${fileOver ? "outline outline-2 -outline-offset-2 outline-dashed outline-primary/60 rounded-b-xl bg-primary/5" : ""}`}
         onScroll={handleScroll}
-        onDragOver={e => { if (e.dataTransfer.types.includes("Files")) { e.preventDefault(); setFileOver(true) } }}
+        onDragOver={e => {
+          if (e.dataTransfer.types.includes("Files") || e.dataTransfer.types.includes(GALLERY_MIME)) {
+            e.preventDefault()
+            e.dataTransfer.dropEffect = "copy"
+            setFileOver(true)
+          }
+        }}
         onDragLeave={() => setFileOver(false)}
         onDrop={e => {
+          const galleryData = e.dataTransfer.getData(GALLERY_MIME)
+          if (galleryData) {
+            e.preventDefault(); setFileOver(false)
+            addFromGallery(galleryData)
+            return
+          }
           if (!e.dataTransfer.types.includes("Files")) return
           e.preventDefault(); setFileOver(false)
           addFiles(Array.from(e.dataTransfer.files))
