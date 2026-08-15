@@ -322,10 +322,10 @@ export function LightboxEditor({ open, imageUrl, aspect, title, initial, applyin
   if (!open) return null
 
   // ─── Sidebar value mapping (display pixels) ──────────────────────────────
-  const X = (xf.cx - xf.w / 2 - frame.x) / k
-  const Y = (xf.cy - xf.h / 2 - frame.y) / k
-  const W = xf.w / k
-  const H = xf.h / k
+  const posX = (xf.cx - xf.w / 2 - frame.x) / k
+  const posY = (xf.cy - xf.h / 2 - frame.y) / k
+  const sizeW = xf.w / k
+  const sizeH = xf.h / k
   const rotDisplay = ((xf.rot % 360) + 360) % 360
 
   const setX = (v: number) => setXf(t => ({ ...t, cx: frame.x + v * k + t.w / 2 }))
@@ -432,12 +432,12 @@ export function LightboxEditor({ open, imageUrl, aspect, title, initial, applyin
                 </div>
               </div>
               <div className="flex items-center gap-1.5">
-                <NumField label="X" value={X} onCommit={setX} />
-                <NumField label="Y" value={Y} onCommit={setY} />
+                <NumField label="X" value={posX} onCommit={setX} />
+                <NumField label="Y" value={posY} onCommit={setY} />
               </div>
               <div className="flex items-center gap-1.5">
-                <NumField label="W" value={W} onCommit={setW} />
-                <NumField label="H" value={H} onCommit={setH} />
+                <NumField label="W" value={sizeW} onCommit={setW} />
+                <NumField label="H" value={sizeH} onCommit={setH} />
                 <button
                   className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-md border transition-colors ${
                     aspectLock ? "border-primary/50 bg-primary/10 text-foreground" : "border-border text-muted-foreground hover:text-foreground hover:bg-accent"
