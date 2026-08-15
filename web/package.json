@@ -29,7 +29,8 @@
     "sharp": "^0.34.5",
     "sonner": "^2.0.7",
     "tailwind-merge": "^3.5.0",
-    "uuid": "^13.0.0"
+    "uuid": "^13.0.0",
+    "vanilla-colorful": "^0.7.2"
   },
   "devDependencies": {
     "@eslint/js": "^9.39.1",

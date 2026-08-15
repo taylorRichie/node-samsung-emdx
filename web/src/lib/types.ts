@@ -89,6 +89,10 @@ export interface QueueEdit {
   offset?: { x: number; y: number }
   /** Letterbox / background color */
   bg?: string
+  /** Transform mode: corner radius on the placed image, in display pixels */
+  radius?: number
+  /** Transform mode: border drawn around the placed image */
+  border?: { color: string; width: number } | null
 }
 
 /** A gallery library item served by the backend */

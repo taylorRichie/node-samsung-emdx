@@ -371,8 +371,30 @@ async function applyQueueEdit(buffer, edit, display = null) {
       ? edit.offset : { x: 0, y: 0 };
     const sw0 = Math.max(1, Math.round(FW * sX));
     const sh0 = Math.max(1, Math.round(FH * sY));
-    let art = await sharp(buffer).resize(sw0, sh0, { fit: 'fill' }).toBuffer();
-    if (rot) art = await sharp(art).rotate(rot, { background: bg }).toBuffer();
+    let art = await sharp(buffer).resize(sw0, sh0, { fit: 'fill' }).ensureAlpha().png().toBuffer();
+
+    // Corner radius (dest-in mask) and border (stroked overlay), both in
+    // display pixels — the same units the editor sidebar shows
+    const radius = Math.max(0, Math.min(Number(edit.radius) || 0, Math.min(sw0, sh0) / 2));
+    const border = edit.border && /^#[0-9a-fA-F]{6}$/.test(edit.border.color || '') && edit.border.width > 0
+      ? { color: edit.border.color, width: Math.min(edit.border.width, 200) } : null;
+    if (radius > 0 || border) {
+      const composites = [];
+      if (radius > 0) {
+        const mask = Buffer.from(
+          `<svg width="${sw0}" height="${sh0}"><rect width="${sw0}" height="${sh0}" rx="${radius}" ry="${radius}" fill="#fff"/></svg>`);
+        composites.push({ input: mask, blend: 'dest-in' });
+      }
+      if (border) {
+        const bw2 = border.width;
+        const stroke = Buffer.from(
+          `<svg width="${sw0}" height="${sh0}"><rect x="${bw2 / 2}" y="${bw2 / 2}" width="${sw0 - bw2}" height="${sh0 - bw2}" rx="${Math.max(0, radius - bw2 / 2)}" ry="${Math.max(0, radius - bw2 / 2)}" fill="none" stroke="${border.color}" stroke-width="${bw2}"/></svg>`);
+        composites.push({ input: stroke, blend: 'over' });
+      }
+      art = await sharp(art).composite(composites).png().toBuffer();
+    }
+
+    if (rot) art = await sharp(art).rotate(rot, { background: { r: 0, g: 0, b: 0, alpha: 0 } }).png().toBuffer();
     const m = await sharp(art).metadata();
     const left = Math.round(FW / 2 + o.x * FW - m.width / 2);
     const top = Math.round(FH / 2 + o.y * FH - m.height / 2);
@@ -1314,7 +1336,7 @@ app.get('/api/displays/:displayId/queue/image/:imageId', resolveDisplay, async (
 // Body: { mode?: 'crop'|'fit'|'stretch', rotation: degrees,
 //         crop: {x,y,width,height}|null, zoom?, offset?: {x,y}, bg?: '#rrggbb' }
 function sanitizeEdit(body) {
-  const { mode, rotation, crop, zoom, scaleX, scaleY, offset, bg } = body ?? {};
+  const { mode, rotation, crop, zoom, scaleX, scaleY, offset, bg, radius, border } = body ?? {};
   const m = ['fit', 'stretch', 'transform'].includes(mode) ? mode : 'crop';
   const rot = Number.isFinite(rotation) ? ((rotation % 360) + 360) % 360 : 0;
   const validCrop = crop && [crop.x, crop.y, crop.width, crop.height].every(Number.isFinite)
@@ -1332,6 +1354,10 @@ function sanitizeEdit(body) {
       ? { x: Math.max(-4, Math.min(4, offset.x)), y: Math.max(-4, Math.min(4, offset.y)) }
       : { x: 0, y: 0 },
     bg: /^#[0-9a-fA-F]{6}$/.test(bg || '') ? bg : '#000000',
+    radius: Number.isFinite(radius) ? Math.max(0, Math.min(radius, 1280)) : 0,
+    border: border && /^#[0-9a-fA-F]{6}$/.test(border.color || '') && Number.isFinite(border.width) && border.width > 0
+      ? { color: border.color, width: Math.min(border.width, 200) }
+      : null,
   };
   const isNoop = m === 'crop' && rot === 0 && !validCrop;
   return isNoop ? null : edit;

@@ -1,8 +1,12 @@
 import { useState, useEffect, useRef, useCallback } from "react"
 import { createPortal } from "react-dom"
-import { Check, Loader2, Lock, LockOpen, Pipette, X } from "lucide-react"
+import {
+  AlignCenterHorizontal, AlignCenterVertical, AlignEndHorizontal, AlignEndVertical,
+  AlignStartHorizontal, AlignStartVertical, Check, Link2, Link2Off, Loader2, Pipette, X,
+} from "lucide-react"
 
 import { Button } from "@/components/ui/button"
+import { ColorPicker } from "@/components/ColorPicker"
 import type { QueueEdit } from "@/lib/types"
 
 export type LightboxResult = QueueEdit
@@ -23,17 +27,16 @@ interface LightboxEditorProps {
 }
 
 // Canvas workspace internals (hit-test + draw all happen in these units)
-const CW = 880
+const CW = 640
 const CH = 520
 // The display frame sits smaller than the workspace so the image can be
 // positioned "behind" it — visible pixels are what lands inside the frame
-const FRAME_H_RATIO = 0.72
+const FRAME_H_RATIO = 0.74
 
-const HANDLE = 7        // corner node half-size (px)
-const GRAB = 12         // corner grab radius
-const ROTATE_ZONE = 30  // rotate ring outside a corner
+const HANDLE = 7
+const GRAB = 12
+const ROTATE_ZONE = 30
 
-// Rotation cursor: small circular-arrows SVG
 const ROTATE_CURSOR = `url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='20' height='20' viewBox='0 0 24 24' fill='none' stroke='white' stroke-width='2.5' stroke-linecap='round'%3E%3Cpath d='M21 12a9 9 0 1 1-2.6-6.3'/%3E%3Cpath d='M21 3v5h-5'/%3E%3C/svg%3E") 10 10, alias`
 
 type DragKind =
@@ -43,12 +46,37 @@ type DragKind =
 
 interface Xform { cx: number; cy: number; w: number; h: number; rot: number }
 
+/** Numeric field that commits on blur/Enter and re-syncs when the value changes */
+function NumField({ label, value, onCommit, width = "flex-1", step = 1 }: {
+  label: string; value: number; onCommit: (v: number) => void; width?: string; step?: number
+}) {
+  return (
+    <label className={`flex items-center gap-1 rounded-md border border-border bg-muted/30 px-1.5 h-7 ${width}`}>
+      <span className="text-[10px] text-muted-foreground w-3 shrink-0">{label}</span>
+      <input
+        key={value}
+        type="number"
+        defaultValue={Math.round(value * 10) / 10}
+        step={step}
+        className="w-full min-w-0 bg-transparent text-xs outline-none tabular-nums [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
+        onBlur={e => { const v = parseFloat(e.target.value); if (Number.isFinite(v)) onCommit(v) }}
+        onKeyDown={e => {
+          if (e.key === "Enter") {
+            const v = parseFloat((e.target as HTMLInputElement).value)
+            if (Number.isFinite(v)) onCommit(v)
+            ;(e.target as HTMLInputElement).blur()
+          }
+        }}
+      />
+    </label>
+  )
+}
+
 /**
- * Free-transform presentation tuner. The display frame is fixed in the middle
- * of the workspace; the image floats behind it. Drag inside the image to
- * position, drag corner nodes to scale (aspect lock → uniform), hover just
- * outside a corner for rotation. Pixels outside the frame are discarded;
- * uncovered frame pixels take the background color (sampleable via pipette).
+ * Free-transform presentation tuner with a properties sidebar. Drag inside the
+ * image to position, corner nodes to scale (aspect link → uniform), hover just
+ * outside a corner for rotation — or type exact values in the panel. Values
+ * are expressed in the display's real pixels (e.g. 1440×2560 frame).
  */
 export function LightboxEditor({ open, imageUrl, aspect, title, initial, applying, onApply, onClose }: LightboxEditorProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null)
@@ -56,6 +84,9 @@ export function LightboxEditor({ open, imageUrl, aspect, title, initial, applyin
   const [imgReady, setImgReady] = useState(false)
   const [xf, setXf] = useState<Xform>({ cx: CW / 2, cy: CH / 2, w: 100, h: 100, rot: 0 })
   const [bg, setBg] = useState("#000000")
+  const [radius, setRadius] = useState(0)
+  const [borderColor, setBorderColor] = useState("#ffffff")
+  const [borderWidth, setBorderWidth] = useState(0)
   const [aspectLock, setAspectLock] = useState(true)
   const [sampling, setSampling] = useState(false)
   const [cursor, setCursor] = useState("default")
@@ -66,6 +97,10 @@ export function LightboxEditor({ open, imageUrl, aspect, title, initial, applyin
     const fw = fh * aspect
     return { x: (CW - fw) / 2, y: (CH - fh) / 2, w: fw, h: fh }
   })()
+  // Real display pixel space (what the server renders into)
+  const DW = aspect >= 1 ? 2560 : 1440
+  const DH = aspect >= 1 ? 1440 : 2560
+  const k = frame.w / DW // canvas px per display px
 
   // ─── Init: load image, restore or default to contain-fit ─────────────────
   useEffect(() => {
@@ -73,6 +108,9 @@ export function LightboxEditor({ open, imageUrl, aspect, title, initial, applyin
     setImgReady(false)
     setSampling(false)
     setBg(initial?.bg ?? "#000000")
+    setRadius(initial?.radius ?? 0)
+    setBorderColor(initial?.border?.color ?? "#ffffff")
+    setBorderWidth(initial?.border?.width ?? 0)
     setAspectLock(true)
     const img = new Image()
     img.crossOrigin = "anonymous"
@@ -114,6 +152,11 @@ export function LightboxEditor({ open, imageUrl, aspect, title, initial, applyin
   const corners = useCallback((t: Xform) => (
     [[-1, -1], [1, -1], [1, 1], [-1, 1]].map(([sx, sy]) => toCanvas((sx * t.w) / 2, (sy * t.h) / 2, t))
   ), [toCanvas])
+  const bbox = (t: Xform) => {
+    const bw = Math.abs(t.w * Math.cos(rad(t.rot))) + Math.abs(t.h * Math.sin(rad(t.rot)))
+    const bh = Math.abs(t.w * Math.sin(rad(t.rot))) + Math.abs(t.h * Math.cos(rad(t.rot)))
+    return { bw, bh }
+  }
 
   // ─── Draw ────────────────────────────────────────────────────────────────
   useEffect(() => {
@@ -124,24 +167,35 @@ export function LightboxEditor({ open, imageUrl, aspect, title, initial, applyin
     canvas.height = CH
     const ctx = canvas.getContext("2d")!
 
-    // Workspace
     ctx.fillStyle = "#141414"
     ctx.fillRect(0, 0, CW, CH)
 
+    const r = Math.max(0, Math.min(radius * k, Math.min(xf.w, xf.h) / 2))
+    const bwPx = Math.max(0, borderWidth * k)
     const drawImage = () => {
       ctx.save()
       ctx.translate(xf.cx, xf.cy)
       ctx.rotate(rad(xf.rot))
+      ctx.beginPath()
+      ctx.roundRect(-xf.w / 2, -xf.h / 2, xf.w, xf.h, r)
+      ctx.save()
+      ctx.clip()
       ctx.drawImage(img, -xf.w / 2, -xf.h / 2, xf.w, xf.h)
+      ctx.restore()
+      if (bwPx > 0) {
+        ctx.lineWidth = bwPx
+        ctx.strokeStyle = borderColor
+        ctx.beginPath()
+        ctx.roundRect(-xf.w / 2 + bwPx / 2, -xf.h / 2 + bwPx / 2, xf.w - bwPx, xf.h - bwPx, Math.max(0, r - bwPx / 2))
+        ctx.stroke()
+      }
       ctx.restore()
     }
 
-    // Outside the frame: ghosted image over workspace
+    // Outside the frame: ghosted; inside: bg + full-strength image
     ctx.globalAlpha = 0.3
     drawImage()
     ctx.globalAlpha = 1
-
-    // Inside the frame: background color, then full-strength image, clipped
     ctx.save()
     ctx.beginPath()
     ctx.rect(frame.x, frame.y, frame.w, frame.h)
@@ -151,12 +205,10 @@ export function LightboxEditor({ open, imageUrl, aspect, title, initial, applyin
     drawImage()
     ctx.restore()
 
-    // Frame border
     ctx.strokeStyle = "rgba(255,255,255,0.85)"
     ctx.lineWidth = 1.5
     ctx.strokeRect(frame.x + 0.5, frame.y + 0.5, frame.w - 1, frame.h - 1)
 
-    // Image outline + corner nodes
     const pts = corners(xf)
     ctx.strokeStyle = "rgba(99,179,237,0.9)"
     ctx.lineWidth = 1
@@ -170,7 +222,7 @@ export function LightboxEditor({ open, imageUrl, aspect, title, initial, applyin
       ctx.fillRect(p.x - HANDLE / 2, p.y - HANDLE / 2, HANDLE, HANDLE)
       ctx.strokeRect(p.x - HANDLE / 2, p.y - HANDLE / 2, HANDLE, HANDLE)
     }
-  }, [open, imgReady, xf, bg, frame.x, frame.y, frame.w, frame.h, corners])
+  }, [open, imgReady, xf, bg, radius, borderColor, borderWidth, k, frame.x, frame.y, frame.w, frame.h, corners])
 
   // ─── Pointer interaction ─────────────────────────────────────────────────
   const canvasPoint = (e: React.PointerEvent) => {
@@ -246,15 +298,11 @@ export function LightboxEditor({ open, imageUrl, aspect, title, initial, applyin
       dragRef.current = { ...drag, lastAngle: angle }
       setXf(t => ({ ...t, rot: t.rot + delta }))
     } else {
-      // Scale: anchor (opposite corner) stays fixed; pointer drives the
-      // dragged corner in image-local space
       setXf(t => {
         const la = toLocal(drag.anchor.x, drag.anchor.y, t)
         const lp = toLocal(p.x, p.y, t)
-        let dw = (lp.x - la.x) * drag.sign.x
-        let dh = (lp.y - la.y) * drag.sign.y
-        dw = Math.max(12, dw)
-        dh = Math.max(12, dh)
+        let dw = Math.max(12, (lp.x - la.x) * drag.sign.x)
+        let dh = Math.max(12, (lp.y - la.y) * drag.sign.y)
         let w = dw, h = dh
         if (aspectLock) {
           const s = Math.max(dw / t.w, dh / t.h)
@@ -273,10 +321,40 @@ export function LightboxEditor({ open, imageUrl, aspect, title, initial, applyin
 
   if (!open) return null
 
-  // Result: normalized against the frame so rendering is resolution-independent
+  // ─── Sidebar value mapping (display pixels) ──────────────────────────────
+  const X = (xf.cx - xf.w / 2 - frame.x) / k
+  const Y = (xf.cy - xf.h / 2 - frame.y) / k
+  const W = xf.w / k
+  const H = xf.h / k
+  const rotDisplay = ((xf.rot % 360) + 360) % 360
+
+  const setX = (v: number) => setXf(t => ({ ...t, cx: frame.x + v * k + t.w / 2 }))
+  const setY = (v: number) => setXf(t => ({ ...t, cy: frame.y + v * k + t.h / 2 }))
+  const setW = (v: number) => setXf(t => {
+    const w = Math.max(4, v * k)
+    return aspectLock ? { ...t, w, h: t.h * (w / t.w) } : { ...t, w }
+  })
+  const setH = (v: number) => setXf(t => {
+    const h = Math.max(4, v * k)
+    return aspectLock ? { ...t, h, w: t.w * (h / t.h) } : { ...t, h }
+  })
+  const setRot = (v: number) => setXf(t => ({ ...t, rot: v }))
+
+  const align = (which: "left" | "hcenter" | "right" | "top" | "vcenter" | "bottom") => setXf(t => {
+    const { bw, bh } = bbox(t)
+    switch (which) {
+      case "left": return { ...t, cx: frame.x + bw / 2 }
+      case "hcenter": return { ...t, cx: frame.x + frame.w / 2 }
+      case "right": return { ...t, cx: frame.x + frame.w - bw / 2 }
+      case "top": return { ...t, cy: frame.y + bh / 2 }
+      case "vcenter": return { ...t, cy: frame.y + frame.h / 2 }
+      case "bottom": return { ...t, cy: frame.y + frame.h - bh / 2 }
+    }
+  })
+
   const result: LightboxResult = {
     mode: "transform",
-    rotation: ((xf.rot % 360) + 360) % 360,
+    rotation: rotDisplay,
     crop: null,
     scaleX: xf.w / frame.w,
     scaleY: xf.h / frame.h,
@@ -285,11 +363,24 @@ export function LightboxEditor({ open, imageUrl, aspect, title, initial, applyin
       y: (xf.cy - (frame.y + frame.h / 2)) / frame.h,
     },
     bg,
+    radius: Math.max(0, radius),
+    border: borderWidth > 0 ? { color: borderColor, width: borderWidth } : null,
   }
 
-  // Portal to <body>: the rail panels are CSS-transformed, which would
-  // otherwise turn this fixed overlay into a child of the panel box.
-  // Deliberately NOT dismissed by outside clicks — Cancel/X only.
+  const alignBtn = (which: Parameters<typeof align>[0], title: string, icon: React.ReactNode) => (
+    <button
+      className="flex h-7 flex-1 items-center justify-center rounded-md text-muted-foreground hover:text-foreground hover:bg-accent transition-colors"
+      title={title} onClick={() => align(which)}
+    >
+      {icon}
+    </button>
+  )
+
+  const SectionLabel = ({ children }: { children: React.ReactNode }) => (
+    <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">{children}</p>
+  )
+
+  // Portal to <body>; deliberately NOT dismissed by outside clicks — Cancel/X only.
   return createPortal(
     <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/70 backdrop-blur-sm p-4">
       <div className="w-[min(94vw,920px)] rounded-xl border border-border bg-background shadow-2xl overflow-hidden">
@@ -306,58 +397,100 @@ export function LightboxEditor({ open, imageUrl, aspect, title, initial, applyin
           </button>
         </div>
 
-        {/* Workspace */}
-        <div className="relative bg-[#141414]">
-          <canvas
-            ref={canvasRef}
-            className="w-full block touch-none"
-            style={{ aspectRatio: `${CW} / ${CH}`, cursor }}
-            onPointerDown={handlePointerDown}
-            onPointerMove={handlePointerMove}
-            onPointerUp={handlePointerUp}
-          />
-          {!imgReady && (
-            <div className="absolute inset-0 flex items-center justify-center text-muted-foreground">
-              <Loader2 className="h-5 w-5 animate-spin" />
-            </div>
-          )}
-        </div>
-
-        {/* Controls */}
-        <div className="flex items-center gap-3 px-4 py-3 border-t border-border">
-          <button
-            className={`flex items-center gap-1.5 h-8 px-2.5 rounded-md border text-xs transition-colors ${
-              aspectLock
-                ? "border-primary/50 bg-primary/10 text-foreground"
-                : "border-border text-muted-foreground hover:text-foreground hover:bg-accent"
-            }`}
-            title={aspectLock ? "Aspect ratio locked — corner scaling is uniform" : "Aspect ratio unlocked — corners scale freely"}
-            onClick={() => setAspectLock(v => !v)}
-          >
-            {aspectLock ? <Lock className="h-3.5 w-3.5" /> : <LockOpen className="h-3.5 w-3.5" />}
-            Aspect ratio
-          </button>
-
-          <div className="flex items-center gap-1.5">
-            <span className="text-[11px] text-muted-foreground">Background color</span>
-            <input
-              type="color" value={bg}
-              onChange={e => setBg(e.target.value)}
-              className="h-7 w-9 rounded-md border border-border bg-transparent cursor-pointer p-0.5"
-              title="Background color"
+        {/* Workspace + properties sidebar */}
+        <div className="flex">
+          <div className="relative flex-1 bg-[#141414] min-w-0">
+            <canvas
+              ref={canvasRef}
+              className="w-full block touch-none"
+              style={{ aspectRatio: `${CW} / ${CH}`, cursor }}
+              onPointerDown={handlePointerDown}
+              onPointerMove={handlePointerMove}
+              onPointerUp={handlePointerUp}
             />
-            <button
-              className={`flex h-7 w-7 items-center justify-center rounded-md border transition-colors ${
-                sampling ? "border-primary bg-primary/10 text-foreground" : "border-border text-muted-foreground hover:text-foreground hover:bg-accent"
-              }`}
-              title="Sample a color from the image"
-              onClick={() => setSampling(s => !s)}
-            >
-              <Pipette className="h-3.5 w-3.5" />
-            </button>
-            {sampling && <span className="text-[11px] text-primary">Click the image…</span>}
+            {!imgReady && (
+              <div className="absolute inset-0 flex items-center justify-center text-muted-foreground">
+                <Loader2 className="h-5 w-5 animate-spin" />
+              </div>
+            )}
           </div>
 
+          <div className="w-[224px] shrink-0 border-l border-border px-3 py-3 space-y-4 overflow-y-auto">
+            {/* Position */}
+            <div className="space-y-2">
+              <SectionLabel>Position</SectionLabel>
+              <div className="flex items-center gap-1">
+                <div className="flex flex-1 items-center rounded-lg border border-border p-0.5 gap-0.5">
+                  {alignBtn("left", "Align left edge", <AlignStartVertical className="h-3.5 w-3.5" />)}
+                  {alignBtn("hcenter", "Align horizontal center", <AlignCenterVertical className="h-3.5 w-3.5" />)}
+                  {alignBtn("right", "Align right edge", <AlignEndVertical className="h-3.5 w-3.5" />)}
+                </div>
+                <div className="flex flex-1 items-center rounded-lg border border-border p-0.5 gap-0.5">
+                  {alignBtn("top", "Align top edge", <AlignStartHorizontal className="h-3.5 w-3.5" />)}
+                  {alignBtn("vcenter", "Align vertical middle", <AlignCenterHorizontal className="h-3.5 w-3.5" />)}
+                  {alignBtn("bottom", "Align bottom edge", <AlignEndHorizontal className="h-3.5 w-3.5" />)}
+                </div>
+              </div>
+              <div className="flex items-center gap-1.5">
+                <NumField label="X" value={X} onCommit={setX} />
+                <NumField label="Y" value={Y} onCommit={setY} />
+              </div>
+              <div className="flex items-center gap-1.5">
+                <NumField label="W" value={W} onCommit={setW} />
+                <NumField label="H" value={H} onCommit={setH} />
+                <button
+                  className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-md border transition-colors ${
+                    aspectLock ? "border-primary/50 bg-primary/10 text-foreground" : "border-border text-muted-foreground hover:text-foreground hover:bg-accent"
+                  }`}
+                  title={aspectLock ? "Aspect ratio locked" : "Aspect ratio unlocked"}
+                  onClick={() => setAspectLock(v => !v)}
+                >
+                  {aspectLock ? <Link2 className="h-3.5 w-3.5" /> : <Link2Off className="h-3.5 w-3.5" />}
+                </button>
+              </div>
+              <div className="flex items-center gap-1.5">
+                <NumField label="∠" value={rotDisplay} onCommit={setRot} width="w-[104px]" step={0.5} />
+                <span className="text-[10px] text-muted-foreground">degrees</span>
+              </div>
+            </div>
+
+            {/* Appearance */}
+            <div className="space-y-2">
+              <SectionLabel>Appearance</SectionLabel>
+              <div className="flex items-center justify-between gap-1.5">
+                <span className="text-[11px] text-muted-foreground">Background</span>
+                <div className="flex items-center gap-1.5">
+                  <ColorPicker value={bg} onChange={setBg} title="Background color" />
+                  <button
+                    className={`flex h-7 w-7 items-center justify-center rounded-md border transition-colors ${
+                      sampling ? "border-primary bg-primary/10 text-foreground" : "border-border text-muted-foreground hover:text-foreground hover:bg-accent"
+                    }`}
+                    title="Sample a color from the image"
+                    onClick={() => setSampling(s => !s)}
+                  >
+                    <Pipette className="h-3.5 w-3.5" />
+                  </button>
+                </div>
+              </div>
+              <div className="flex items-center justify-between gap-1.5">
+                <span className="text-[11px] text-muted-foreground">Radius</span>
+                <NumField label="" value={radius} onCommit={v => setRadius(Math.max(0, v))} width="w-[88px]" />
+              </div>
+              <div className="flex items-center justify-between gap-1.5">
+                <span className="text-[11px] text-muted-foreground">Border</span>
+                <div className="flex items-center gap-1.5">
+                  <ColorPicker value={borderColor} onChange={setBorderColor} title="Border color" />
+                  <NumField label="" value={borderWidth} onCommit={v => setBorderWidth(Math.max(0, v))} width="w-[64px]" />
+                </div>
+              </div>
+              {sampling && <p className="text-[10px] text-primary">Click the image to sample…</p>}
+            </div>
+          </div>
+        </div>
+
+        {/* Footer */}
+        <div className="flex items-center gap-2 px-4 py-3 border-t border-border">
+          <p className="text-[10px] text-muted-foreground">Values are display pixels ({DW}×{DH})</p>
           <div className="flex-1" />
           <Button variant="outline" size="sm" className="h-8 text-xs" onClick={onClose} disabled={applying}>
             Cancel
