@@ -78,6 +78,9 @@ export function PropertiesPanel({
 
   useEffect(() => { setImgError(false) }, [lastImageTs, display.id])
 
+  // Track live server-pushed status updates while the panel is open
+  useEffect(() => { setStatus(statusProp) }, [statusProp])
+
   // History follows the current image: refetch whenever a push lands
   useEffect(() => {
     if (!open) return

@@ -120,9 +120,24 @@ export default function App() {
     fetchScenes()
   }, [fetchDisplays, fetchScenes])
 
+  // Server is the source of truth for display state: seed from its cache and
+  // subscribe to the event stream — pushes and status changes made by the
+  // backend (or any other open client) update this view in real time.
   useEffect(() => {
-    if (displays.length > 0) fetchAllStatuses()
-  }, [displays.length]) // eslint-disable-line react-hooks/exhaustive-deps
+    fetch("/api/statuses").then(r => r.ok ? r.json() : null)
+      .then(s => { if (s) setStatuses(prev => ({ ...prev, ...s })) })
+      .catch(() => {})
+    const es = new EventSource("/api/events")
+    es.onmessage = e => {
+      try {
+        const ev = JSON.parse(e.data)
+        if (ev.type === "snapshot") setStatuses(prev => ({ ...prev, ...ev.statuses }))
+        else if (ev.type === "status") setStatuses(prev => ({ ...prev, [ev.displayId]: ev.status }))
+        else if (ev.type === "push") setLastImageTimestamps(prev => ({ ...prev, [ev.displayId]: ev.ts }))
+      } catch { /* malformed event */ }
+    }
+    return () => es.close()
+  }, [])
 
   // ─── Display CRUD ────────────────────────────────────────────────────────
 

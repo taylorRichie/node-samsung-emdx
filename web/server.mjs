@@ -235,6 +235,7 @@ async function performSleep(displayId, { host, pin, mac, sleepMode }) {
     await device.setPower({ power: false });
     await device.disconnect();
     console.log(`   ✅ Display powered off (${sleepMode})`);
+    noteStatus(displayId, null);
 
     if (sleepMode === 'scheduled') startWakePoller(displayId);
   } catch (err) {
@@ -303,6 +304,8 @@ async function pushImageToDisplay({ imageBuffer, host, pin, mac, displayId, last
     const lastPath = getDisplayLastImagePath(displayId);
     if (!skipHistory) archiveLastImage(displayId, lastPath);
     fs.writeFile(lastPath, lastImageBuffer ?? imageBuffer, () => {});
+    noteStatus(displayId, {});
+    notePush(displayId);
   }
   return pushId;
 }
@@ -431,6 +434,63 @@ async function pushNextQueueImage(displayId, { host, pin, mac }, imageId = null)
   return { entry, index: idx + 1, total: queue.images.length };
 }
 
+// ─── Status cache + event stream ─────────────────────────────────────────────
+// The server is the single source of truth for display state: every MDC
+// interaction (poller probe, push, sleep, status read) updates this cache,
+// and connected clients receive changes over SSE — so every open browser
+// shows the same reality without issuing its own MDC probes.
+
+const statusCache = new Map(); // displayId → { status: object|null, updatedAt }
+const sseClients = new Set();
+
+function sseBroadcast(event) {
+  const payload = `data: ${JSON.stringify(event)}\n\n`;
+  for (const res of sseClients) {
+    try { res.write(payload); } catch { /* dropped client; close handler cleans up */ }
+  }
+}
+
+// status: object (reachable, merged over previous fields) or null (unreachable)
+function noteStatus(displayId, status) {
+  const prev = statusCache.get(displayId);
+  const merged = status === null ? null : {
+    power: null, battery: null, deviceName: null, networkStandby: null,
+    ...(prev?.status || {}),
+    ...status,
+    sleepTimer: getSleepTimerInfo(displayId),
+  };
+  const changed = JSON.stringify(prev?.status ?? null) !== JSON.stringify(merged);
+  statusCache.set(displayId, { status: merged, updatedAt: Date.now() });
+  if (changed) sseBroadcast({ type: 'status', displayId, status: merged });
+}
+
+function notePush(displayId) {
+  sseBroadcast({ type: 'push', displayId, ts: Date.now() });
+}
+
+// Background sweep: sequential light probes keep the cache honest for displays
+// the pollers aren't touching (manual mode, idle). One at a time with spacing —
+// the EM32DX allows a single MDC session and throttles rapid commands.
+async function sweepStatuses() {
+  for (const display of loadDisplays()) {
+    const { id, host, pin, mac } = display;
+    if (!host || !pin) continue;
+    try {
+      const device = new Device({ host, mac: mac || undefined, pin });
+      await device.connect({ timeout: 3_000 });
+      const battery = await device.getBatteryState().catch(() => null);
+      const networkStandby = await device.getNetworkStandby().catch(() => null);
+      await device.disconnect();
+      noteStatus(id, { battery, networkStandby });
+    } catch {
+      noteStatus(id, null);
+    }
+    await new Promise(r => setTimeout(r, 500));
+  }
+}
+setInterval(sweepStatuses, 5 * 60_000);
+setTimeout(sweepStatuses, 10_000); // initial fill shortly after boot
+
 // ─── Per-Display Wake Pollers ─────────────────────────────────────────────────
 
 const wakePollers = new Map();
@@ -482,7 +542,8 @@ async function pollForWake(displayId) {
       const device = new Device({ host, mac: mac || undefined, pin });
       await device.connect({ timeout: 3_000 });
       await device.disconnect();
-    } catch { return; }
+    } catch { noteStatus(displayId, null); return; }
+    noteStatus(displayId, {});
 
     console.log(`\n🔔 [${displayId.slice(0, 8)}] Wake poller: display is online!`);
     stopWakePoller(displayId);
@@ -791,10 +852,35 @@ app.get('/api/displays/:displayId/status', resolveDisplay, async (req, res) => {
     const serialNumber = await device.getSerialNumber().catch(() => null);
     const softwareVersion = await device.getSoftwareVersion().catch(() => null);
     await device.disconnect();
+    noteStatus(req.params.displayId, { power, battery, deviceName, networkStandby, serialNumber, softwareVersion });
     res.json({ power, battery, deviceName, networkStandby, serialNumber, softwareVersion, sleepTimer: getSleepTimerInfo(req.params.displayId) });
   } catch (err) {
+    noteStatus(req.params.displayId, null);
     res.status(500).json({ error: err.message });
   }
+});
+
+// Cached statuses — instant, no MDC traffic
+app.get('/api/statuses', (_req, res) => {
+  const out = {};
+  for (const [id, v] of statusCache) out[id] = v.status;
+  res.json(out);
+});
+
+// Live event stream: status changes + pushes, with a snapshot on connect
+app.get('/api/events', (req, res) => {
+  res.writeHead(200, {
+    'Content-Type': 'text/event-stream',
+    'Cache-Control': 'no-cache',
+    'Connection': 'keep-alive',
+    'X-Accel-Buffering': 'no', // keep nginx from buffering the stream
+  });
+  const snapshot = {};
+  for (const [id, v] of statusCache) snapshot[id] = v.status;
+  res.write(`data: ${JSON.stringify({ type: 'snapshot', statuses: snapshot })}\n\n`);
+  sseClients.add(res);
+  const keepalive = setInterval(() => { try { res.write(':ka\n\n'); } catch { /* closing */ } }, 25_000);
+  req.on('close', () => { clearInterval(keepalive); sseClients.delete(res); });
 });
 
 // ─── Per-display: Push ──────────────────────────────────────────────────────

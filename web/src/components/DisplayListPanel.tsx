@@ -1,4 +1,4 @@
-import { useState } from "react"
+import { useEffect, useState } from "react"
 import { toast } from "sonner"
 import {
   BatteryCharging, BatteryFull, BatteryLow, BatteryMedium, Loader2, Locate, Monitor, Moon, Plus, Power, Sun, Wifi, WifiOff, Zap,
@@ -20,6 +20,8 @@ interface DisplayListPanelProps {
 
 function Thumb({ display, ts }: { display: DisplayConfig; ts: number }) {
   const [err, setErr] = useState(false)
+  // A failed load isn't forever — a new push (fresh ts) retries the image
+  useEffect(() => { setErr(false) }, [ts])
   const url = display.host ? `/api/displays/${display.id}/last-image?t=${ts}` : null
   return (
     <div className="h-9 w-9 shrink-0 rounded-md border border-border bg-muted/40 overflow-hidden flex items-center justify-center">
