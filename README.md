@@ -68,6 +68,9 @@ You can also push images directly from the command line without the web UI.
 ### Usage
 
 ```bash
+# Find displays on your network (IP, MAC, model, serial)
+node bin/index.mjs discover
+
 # Push an image
 node bin/index.mjs show-image \
   --host 192.168.0.123 \

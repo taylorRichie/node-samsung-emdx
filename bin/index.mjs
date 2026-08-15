@@ -3,7 +3,7 @@
 import fs from 'fs';
 import path from 'path';
 
-import { Device } from '../lib/index.mjs';
+import { Device, discover } from '../lib/index.mjs';
 import express from 'express';
 import getPort from 'get-port';
 import getLocalIp from '@loxjs/node-local-ip';
@@ -175,6 +175,38 @@ yargs(hideBin(process.argv))
         server.close();
         console.error(`❌ ${err.message}`);
         process.exit(1);
+      }
+    },
+  })
+  .command({
+    command: 'discover',
+    describe: 'Search the local network for Samsung EMDX displays',
+    builder: yargs => yargs
+      .option('timeout', {
+        type: 'number',
+        describe: 'Search duration in seconds',
+        default: 4,
+      }),
+    handler: async (argv) => {
+      console.log('🔍 Searching for EMDX displays...');
+      const displays = await discover({
+        timeout: argv.timeout * 1000,
+        onProgress: msg => console.log(`   ${msg}`),
+      });
+
+      if (displays.length === 0) {
+        console.log('❌ No displays found — sleeping displays do not respond, wake them first');
+        return;
+      }
+
+      console.log('');
+      console.log(`✅ Found ${displays.length} display${displays.length !== 1 ? 's' : ''}:`);
+      for (const d of displays) {
+        console.log('');
+        console.log(`  ${d.name} (${d.model})`);
+        console.log(`    Host:   ${d.host}`);
+        console.log(`    MAC:    ${d.mac || 'unknown'}`);
+        console.log(`    Serial: ${d.serial || 'unknown'}`);
       }
     },
   })

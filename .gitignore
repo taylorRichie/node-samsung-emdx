@@ -4,3 +4,6 @@
 deploy.sh
 ecosystem.config.cjs
 web/.queue/
+web/.displays/
+Artwork/
+.claude/

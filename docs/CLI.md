@@ -37,7 +37,7 @@ Your computer must be reachable by the display on the same subnet. The display i
 - **Node.js** ≥ 20
 - **Samsung EMDX** E-Paper Display on the same network
 - **Display PIN** — Set in the display’s settings (default is often `000000`)
-- **Display IP** — Assigned via DHCP or static; find it in your router or the display’s network settings
+- **Display IP** — Run `node bin/index.mjs discover` to find displays on your network, or check your router / the display’s network settings
 
 ---
 
@@ -192,6 +192,47 @@ Software: X.X.X
 
 ---
 
+### `discover` — Find EMDX displays on the network
+
+Searches the local network for EMDX displays via SSDP (UPnP) and reports their IP, MAC, model, and serial number. No PIN required.
+
+```bash
+node bin/index.mjs discover
+```
+
+**Options:**
+
+| Option      | Required | Description                        |
+| ----------- | -------- | ---------------------------------- |
+| `--timeout` | No       | Search duration in seconds (default 4) |
+
+**Example output:**
+
+```
+🔍 Searching for EMDX displays...
+
+✅ Found 1 display:
+
+  Display 4 (EM32DX)
+    Host:   192.168.1.220
+    MAC:    B0:F2:F6:EF:EB:CC
+    Serial: 0WPSHNPY900879F
+```
+
+**How it works:**
+
+1. Broadcasts an SSDP `M-SEARCH` for `urn:schemas-upnp-org:device:MediaRenderer:1` — EMDX displays advertise a DLNA media renderer on port 9197.
+2. Fetches each responder's UPnP device description XML and filters for Samsung LFD devices (`modelName` starting with `EM`, e.g. `EM32DX`). This excludes Samsung TVs, which expose the same DMR endpoint.
+3. Confirms the MDC control port (1515) is open.
+4. Reads the MAC address from the OS ARP cache (populated by the SSDP exchange itself).
+
+**Notes:**
+
+- Sleeping displays do not respond — only awake displays (or those in network standby with WiFi active) are found. Wake them first.
+- The friendly name reported is the one set during the display's SmartThings setup.
+
+---
+
 ## How It Works
 
 ### `show-image` flow
@@ -235,6 +276,7 @@ The Samsung MDC protocol uses:
 | `0x0E`     | Software Version     | Get       | —           | Firmware version                      |
 | `0x11`     | Power Control        | Get/Set   | `0x00` off, `0x01` on | Power state                    |
 | `0x1B`     | Battery State        | Get       | `0x73`      | Battery level, charging, health       |
+| `0x25`     | On Timer             | Get/Set   | `[en, repeat, hh, mm, 0x01]` | Auto power-on schedule |
 | `0x67`     | Device Name          | Get       | —           | Display name                          |
 | `0xB5`     | Network Standby      | Get/Set   | `0x00` off, `0x01` on | WiFi listener on/off      |
 | `0xC7`     | Content Download     | Set       | `0x53 0x80 <len> <url>` | Set content manifest URL   |
