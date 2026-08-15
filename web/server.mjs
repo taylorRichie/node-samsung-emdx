@@ -417,7 +417,16 @@ async function pushNextQueueImage(displayId, { host, pin, mac }, imageId = null)
     saveDisplayQueue(displayId, queueAfterPush);
   }
 
-  const sleepAfter = display?.sleepAfter ?? 20;
+  // E-paper keeps the image while asleep, so cap the awake window at half the
+  // cycle interval — the display must be back asleep BEFORE the next wake is
+  // due, or performSleep re-bases nextWakeAt and a 5-minute rotation drifts
+  // into a 10- or 25-minute one.
+  let sleepAfter = display?.sleepAfter ?? 20;
+  const schedule = loadDisplaySchedule(displayId);
+  if (schedule.enabled && isIntervalSchedule(schedule)) {
+    const intervalMin = Math.max(1, Math.round(scheduleIntervalMs(schedule) / 60_000));
+    sleepAfter = Math.min(sleepAfter, Math.max(1, Math.floor(intervalMin / 2)));
+  }
   if (sleepAfter > 0) scheduleSleep(displayId, { host, pin, mac, minutes: sleepAfter, sleepMode: 'scheduled' });
   return { entry, index: idx + 1, total: queue.images.length };
 }
@@ -426,21 +435,32 @@ async function pushNextQueueImage(displayId, { host, pin, mac }, imageId = null)
 
 const wakePollers = new Map();
 
-function startWakePoller(displayId) {
+// The display stays MDC-reachable for a couple of minutes after a power-off,
+// so the first probe waits out that window — otherwise the poller "finds" the
+// display it just slept and churns through relay-sleeps every 30 seconds.
+const POLLER_GRACE_MS = 150_000;
+
+function startWakePoller(displayId, { graceMs = POLLER_GRACE_MS } = {}) {
   if (wakePollers.has(displayId)) return;
   if (loadDisplayMode(displayId) !== 'scheduled') return;
   const schedule = loadDisplaySchedule(displayId);
   if (!schedule.enabled) return;
 
-  console.log(`   🔄 [${displayId.slice(0, 8)}] Wake poller started`);
-  const interval = setInterval(() => pollForWake(displayId), 30_000);
-  wakePollers.set(displayId, { interval, running: false });
+  console.log(`   🔄 [${displayId.slice(0, 8)}] Wake poller started (first probe in ${Math.round(graceMs / 1000)}s)`);
+  const entry = { interval: null, timeout: null, running: false };
+  entry.timeout = setTimeout(() => {
+    entry.timeout = null;
+    pollForWake(displayId);
+    entry.interval = setInterval(() => pollForWake(displayId), 30_000);
+  }, graceMs);
+  wakePollers.set(displayId, entry);
 }
 
 function stopWakePoller(displayId) {
   const entry = wakePollers.get(displayId);
   if (entry) {
-    clearInterval(entry.interval);
+    if (entry.interval) clearInterval(entry.interval);
+    if (entry.timeout) clearTimeout(entry.timeout);
     wakePollers.delete(displayId);
     console.log(`   ℹ️  [${displayId.slice(0, 8)}] Wake poller stopped`);
   }
@@ -497,8 +517,8 @@ async function pollForWake(displayId) {
   } catch (err) {
     console.error(`   ❌ Wake poller push failed: ${err.message}`);
     // The poller was stopped when the display came online — restart it so a
-    // failed push retries on the next tick instead of stalling the cycle
-    startWakePoller(displayId);
+    // failed push retries shortly instead of stalling the cycle
+    startWakePoller(displayId, { graceMs: 30_000 });
   } finally {
     const e = wakePollers.get(displayId);
     if (e) e.running = false;
@@ -510,7 +530,7 @@ for (const display of loadDisplays()) {
   const schedule = loadDisplaySchedule(display.id);
   if (schedule.enabled && loadDisplayMode(display.id) === 'scheduled') {
     console.log(`📅 [${display.id.slice(0, 8)}] Resuming wake poller for "${display.name}"`);
-    startWakePoller(display.id);
+    startWakePoller(display.id, { graceMs: 5_000 });
   }
 }
 
