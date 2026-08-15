@@ -1421,15 +1421,16 @@ app.post('/api/displays/:displayId/push-edit', resolveDisplay, async (req, res) 
   const displayId = req.params.displayId;
   const { host, pin, mac } = req.display;
   if (!host || !pin) return res.status(400).json({ error: 'Display has no host/pin' });
-  // Prefer the stored original; fall back to the rendered presentation for
-  // displays that predate source tracking
-  const srcPath = fs.existsSync(currentSourcePath(displayId))
-    ? currentSourcePath(displayId)
-    : getDisplayLastImagePath(displayId);
-  if (!fs.existsSync(srcPath)) return res.status(404).json({ error: 'No current image' });
+  // Displays that predate source tracking adopt their current rendered image
+  // as the source on first edit — from then on edits stay non-destructive
+  if (!fs.existsSync(currentSourcePath(displayId))) {
+    const lastPath = getDisplayLastImagePath(displayId);
+    if (!fs.existsSync(lastPath)) return res.status(404).json({ error: 'No current image' });
+    setCurrentSource(displayId, fs.readFileSync(lastPath), null);
+  }
   try {
     const edit = sanitizeEdit(req.body?.edit ?? req.body);
-    const rendered = await applyQueueEdit(fs.readFileSync(srcPath), edit, req.display);
+    const rendered = await applyQueueEdit(fs.readFileSync(currentSourcePath(displayId)), edit, req.display);
     setCurrentEdit(displayId, edit);
     cancelSleepTimer(displayId);
     stopWakePoller(displayId);
