@@ -311,6 +311,31 @@ async function pushImageToDisplay({ imageBuffer, host, pin, mac, displayId, last
   return pushId;
 }
 
+// ─── Current image source + edit (non-destructive) ──────────────────────────
+// last-push.jpg is the RENDERED presentation (for thumbnails/history). The
+// original art and its transform are kept separately so the editor always
+// reworks the original — repositioning is never baked into the source.
+
+function currentSourcePath(id) { return path.join(displayDir(id), 'current-source.jpg'); }
+function currentEditPath(id) { return path.join(displayDir(id), 'current-edit.json'); }
+
+function setCurrentSource(displayId, buffer, edit = null) {
+  try {
+    ensureDisplayDir(displayId);
+    fs.writeFileSync(currentSourcePath(displayId), buffer);
+    writeJson(currentEditPath(displayId), { edit });
+  } catch { /* best effort */ }
+}
+
+function setCurrentEdit(displayId, edit) {
+  try { ensureDisplayDir(displayId); writeJson(currentEditPath(displayId), { edit }); }
+  catch { /* best effort */ }
+}
+
+function getCurrentEdit(displayId) {
+  return readJson(currentEditPath(displayId), { edit: null }).edit ?? null;
+}
+
 // ─── Image history ───────────────────────────────────────────────────────────
 // Every replaced presentation image is kept (newest first, capped) so the UI
 // can show a dimmed "History" strip below the current image.
@@ -499,8 +524,9 @@ async function pushNextQueueImage(displayId, { host, pin, mac }, imageId = null)
     throw new Error(`Queue image missing: ${entry.filename}`);
   }
 
-  let imageBuffer = fs.readFileSync(imgPath);
-  imageBuffer = await applyQueueEdit(imageBuffer, entry.edit, display);
+  const originalBuffer = fs.readFileSync(imgPath);
+  setCurrentSource(displayId, originalBuffer, entry.edit ?? null);
+  const imageBuffer = await applyQueueEdit(originalBuffer, entry.edit, display);
 
   await pushPresentation(displayId, { host, pin, mac }, imageBuffer);
 
@@ -659,6 +685,7 @@ async function pollForWake(displayId) {
       const result = await fetchFromProvider(provider);
       let imageBuffer = await downloadImage(result.imageUrl);
       imageBuffer = await coverCropToDisplay(imageBuffer, display);
+      setCurrentSource(displayId, imageBuffer, null);
       await pushPresentation(displayId, { host, pin, mac }, imageBuffer);
       console.log(`   ✅ Provider image pushed: "${result.title}"`);
       const sleepAfter = display.sleepAfter ?? 20;
@@ -990,6 +1017,7 @@ app.post('/api/displays/:displayId/push', resolveDisplay, upload.single('image')
     // Normalize to JPEG honoring the file's own orientation (EXIF). The image
     // is presented exactly as the file is — calibration happens at payload time.
     imageBuffer = await sharp(imageBuffer).rotate().jpeg({ quality: 88 }).toBuffer();
+    setCurrentSource(displayId, imageBuffer, null);
 
     cancelSleepTimer(displayId);
     stopWakePoller(displayId);
@@ -1020,6 +1048,19 @@ app.get('/api/displays/:displayId/last-image', resolveDisplay, (req, res) => {
   res.header('Content-Type', 'image/jpeg');
   res.header('Cache-Control', 'no-cache');
   fs.createReadStream(imgPath).pipe(res);
+});
+
+// Original art behind the current presentation (for the non-destructive editor)
+app.get('/api/displays/:displayId/current-source', resolveDisplay, (req, res) => {
+  const p = currentSourcePath(req.params.displayId);
+  if (!fs.existsSync(p)) return res.status(404).end();
+  res.header('Content-Type', 'image/jpeg');
+  res.header('Cache-Control', 'no-cache');
+  fs.createReadStream(p).pipe(res);
+});
+
+app.get('/api/displays/:displayId/current-edit', resolveDisplay, (req, res) => {
+  res.json({ edit: getCurrentEdit(req.params.displayId) });
 });
 
 // Previously displayed images, newest first
@@ -1380,11 +1421,16 @@ app.post('/api/displays/:displayId/push-edit', resolveDisplay, async (req, res) 
   const displayId = req.params.displayId;
   const { host, pin, mac } = req.display;
   if (!host || !pin) return res.status(400).json({ error: 'Display has no host/pin' });
-  const lastPath = getDisplayLastImagePath(displayId);
-  if (!fs.existsSync(lastPath)) return res.status(404).json({ error: 'No current image' });
+  // Prefer the stored original; fall back to the rendered presentation for
+  // displays that predate source tracking
+  const srcPath = fs.existsSync(currentSourcePath(displayId))
+    ? currentSourcePath(displayId)
+    : getDisplayLastImagePath(displayId);
+  if (!fs.existsSync(srcPath)) return res.status(404).json({ error: 'No current image' });
   try {
     const edit = sanitizeEdit(req.body?.edit ?? req.body);
-    const rendered = await applyQueueEdit(fs.readFileSync(lastPath), edit, req.display);
+    const rendered = await applyQueueEdit(fs.readFileSync(srcPath), edit, req.display);
+    setCurrentEdit(displayId, edit);
     cancelSleepTimer(displayId);
     stopWakePoller(displayId);
     await pushPresentation(displayId, { host, pin, mac }, rendered);
@@ -1592,6 +1638,7 @@ app.post('/api/displays/:displayId/providers/apply', resolveDisplay, async (req,
     if (!imgRes.ok) throw new Error(`Failed to download image: ${imgRes.status}`);
     let imageBuffer = Buffer.from(await imgRes.arrayBuffer());
     imageBuffer = await coverCropToDisplay(imageBuffer, getDisplay(displayId));
+    setCurrentSource(displayId, imageBuffer, null);
 
     cancelSleepTimer(displayId);
     stopWakePoller(displayId);

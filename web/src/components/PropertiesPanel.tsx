@@ -54,6 +54,8 @@ export function PropertiesPanel({
   const [removeOpen, setRemoveOpen] = useState(false)
   const [editorOpen, setEditorOpen] = useState(false)
   const [editorApplying, setEditorApplying] = useState(false)
+  const [editorSrc, setEditorSrc] = useState<string | null>(null)
+  const [editorInitial, setEditorInitial] = useState<LightboxResult | null>(null)
   const [calib, setCalib] = useState<"idle" | "sending" | "awaiting" | "finishing">("idle")
   const [calibSel, setCalibSel] = useState<number | null>(null)
   const [calibInfo, setCalibInfo] = useState(false)
@@ -165,8 +167,26 @@ export function PropertiesPanel({
     } finally { setPushing(false) }
   }
 
-  // Lightbox tune of the current image: the server re-renders last-push.jpg
-  // with the edit (crop/fit/stretch, rotation, letterbox) and pushes it
+  // Open the tuner against the ORIGINAL art + its saved transform — edits are
+  // stored as overrides, never baked into the source, so a shrunk-and-placed
+  // image stays individually resizable on the next visit
+  const openEditor = async () => {
+    try {
+      const [editRes, srcRes] = await Promise.all([
+        fetch(`${api}/current-edit`),
+        fetch(`${api}/current-source`, { method: "HEAD" }),
+      ])
+      const data = editRes.ok ? await editRes.json() as { edit?: LightboxResult | null } : {}
+      setEditorInitial(data.edit ?? null)
+      setEditorSrc(srcRes.ok ? `${api}/current-source?t=${lastImageTs}` : lastImageUrl)
+    } catch {
+      setEditorInitial(null)
+      setEditorSrc(lastImageUrl)
+    }
+    setEditorOpen(true)
+  }
+
+  // Apply: the server re-renders the source with the edit and pushes it
   const handleEditorApply = async (result: LightboxResult) => {
     setEditorApplying(true)
     try {
@@ -449,7 +469,7 @@ export function PropertiesPanel({
                   src={lastImageUrl} alt="Current"
                   className="w-full max-h-56 object-contain bg-black/40 cursor-pointer hover:opacity-90 transition-opacity"
                   title="Click to tune presentation (rotate, scale, crop)"
-                  onClick={() => setEditorOpen(true)}
+                  onClick={openEditor}
                   onError={() => setImgError(true)}
                 />
               ) : (
@@ -497,13 +517,14 @@ export function PropertiesPanel({
 
       </div>
 
-      {/* Presentation tuner for the current image */}
-      {lastImageUrl && (
+      {/* Presentation tuner — works on the original source + saved transform */}
+      {editorSrc && (
         <LightboxEditor
           open={editorOpen}
-          imageUrl={lastImageUrl}
+          imageUrl={editorSrc}
           aspect={displayAspect(display)}
           title={`Tune presentation — ${display.name}`}
+          initial={editorInitial}
           applying={editorApplying}
           onApply={handleEditorApply}
           onClose={() => setEditorOpen(false)}
