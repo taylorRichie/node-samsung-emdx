@@ -245,8 +245,11 @@ export function PropertiesPanel({
           {status ? (
             <>
               {status.battery && (
-                <span className="flex items-center gap-1">
-                  {status.battery.charging ? <BatteryCharging className="h-3.5 w-3.5 text-green-500" /> : <BatteryMedium className="h-3.5 w-3.5" />}
+                <span
+                  className={`flex items-center gap-1 ${status.battery.charging ? "text-green-400" : ""}`}
+                  title={status.battery.charging ? `Battery ${status.battery.level}% — charging` : `Battery ${status.battery.level}%`}
+                >
+                  {status.battery.charging ? <BatteryCharging className="h-3.5 w-3.5" /> : <BatteryMedium className="h-3.5 w-3.5" />}
                   {status.battery.level}%
                 </span>
               )}

@@ -1,7 +1,7 @@
 import { useState } from "react"
 import { toast } from "sonner"
 import {
-  BatteryCharging, BatteryFull, BatteryLow, BatteryMedium, Loader2, Locate, Monitor, Moon, Plus, Power, Sun, Wifi, WifiOff,
+  BatteryCharging, BatteryFull, BatteryLow, BatteryMedium, Loader2, Locate, Monitor, Moon, Plus, Power, Sun, Wifi, WifiOff, Zap,
 } from "lucide-react"
 import type { DisplayConfig, DisplayStatus } from "@/lib/types"
 
@@ -55,6 +55,13 @@ function StatusRow({ status }: { status: DisplayStatus | null }) {
       <span className={`${chip} text-green-500`} title={`Reachable — accepts pushes (panel power: ${status.power ?? "unknown"})`}>
         <Power className="h-2.5 w-2.5" /> Awake
       </span>
+      {/* Battery ahead of the standby chip so the percentage never truncates */}
+      {b?.present && (
+        <span className={`${chip} ${b.charging ? "text-green-400" : b.level <= 20 ? "text-red-400" : "text-muted-foreground/60"}`}
+          title={b.charging ? `Battery ${b.level}% — charging` : `Battery ${b.level}%`}>
+          <BatteryIcon className="h-2.5 w-2.5" /> {b.level}%{b.charging && <Zap className="h-2.5 w-2.5 fill-current -ml-0.5" />}
+        </span>
+      )}
       {status.networkStandby != null && (
         <span
           className={`${chip} ${status.networkStandby ? "text-sky-400" : "text-muted-foreground/60"}`}
@@ -62,12 +69,6 @@ function StatusRow({ status }: { status: DisplayStatus | null }) {
         >
           {status.networkStandby ? <Wifi className="h-2.5 w-2.5" /> : <WifiOff className="h-2.5 w-2.5" />}
           {status.networkStandby ? "Light" : "Deep"}
-        </span>
-      )}
-      {b?.present && (
-        <span className={`${chip} ${b.charging ? "text-green-500" : b.level <= 20 ? "text-red-400" : "text-muted-foreground/60"}`}
-          title={`Battery ${b.level}%${b.charging ? " (charging)" : ""}`}>
-          <BatteryIcon className="h-2.5 w-2.5" /> {b.level}%
         </span>
       )}
       {status.sleepTimer && (
@@ -114,7 +115,7 @@ export function DisplayListPanel({ displays, statuses, lastImageTimestamps, sele
             <Thumb display={d} ts={lastImageTimestamps[d.id] || 0} />
             <div className="min-w-0 flex-1">
               <p className="truncate text-sm leading-tight">{d.name}</p>
-              <div className="flex items-center gap-1.5 text-[10px] leading-tight mt-0.5 whitespace-nowrap overflow-hidden">
+              <div className="flex items-center gap-1 text-[10px] leading-tight mt-0.5 whitespace-nowrap overflow-hidden">
                 <StatusRow status={statuses[d.id] ?? null} />
               </div>
             </div>
