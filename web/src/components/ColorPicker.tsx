@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef } from "react"
+import { createPortal } from "react-dom"
 import "vanilla-colorful"
 
 declare module "react" {
@@ -24,10 +25,25 @@ interface ColorPickerProps {
 export function ColorPicker({ value, onChange, title, extra }: ColorPickerProps) {
   const [open, setOpen] = useState(false)
   const [hexDraft, setHexDraft] = useState(value)
+  const [pos, setPos] = useState({ top: 0, left: 0 })
   const rootRef = useRef<HTMLDivElement>(null)
+  const popRef = useRef<HTMLDivElement>(null)
   const pickerRef = useRef<HTMLElement>(null)
 
   useEffect(() => { setHexDraft(value) }, [value])
+
+  const openAt = () => {
+    const r = rootRef.current?.getBoundingClientRect()
+    if (r) {
+      // Above the swatch, right-aligned; clamped to the viewport
+      const width = 216, height = 224
+      setPos({
+        top: Math.max(8, r.top - height - 8),
+        left: Math.min(Math.max(8, r.right - width), window.innerWidth - width - 8),
+      })
+    }
+    setOpen(v => !v)
+  }
 
   // vanilla-colorful emits a custom "color-changed" event
   useEffect(() => {
@@ -41,7 +57,8 @@ export function ColorPicker({ value, onChange, title, extra }: ColorPickerProps)
   useEffect(() => {
     if (!open) return
     const close = (e: MouseEvent) => {
-      if (rootRef.current && !rootRef.current.contains(e.target as Node)) setOpen(false)
+      const t = e.target as Node
+      if (!rootRef.current?.contains(t) && !popRef.current?.contains(t)) setOpen(false)
     }
     document.addEventListener("mousedown", close)
     return () => document.removeEventListener("mousedown", close)
@@ -57,12 +74,16 @@ export function ColorPicker({ value, onChange, title, extra }: ColorPickerProps)
       <button
         className="h-7 w-9 rounded-md border border-border p-0.5"
         title={title}
-        onClick={() => setOpen(v => !v)}
+        onClick={openAt}
       >
         <span className="block h-full w-full rounded-[4px] border border-black/20" style={{ background: value }} />
       </button>
-      {open && (
-        <div className="absolute right-0 bottom-full mb-2 z-50 rounded-lg border border-border bg-background p-2 shadow-xl space-y-2 w-[216px]">
+      {open && createPortal(
+        <div
+          ref={popRef}
+          className="fixed z-[130] rounded-lg border border-border bg-background p-2 shadow-xl space-y-2 w-[216px]"
+          style={{ top: pos.top, left: pos.left }}
+        >
           <hex-color-picker ref={pickerRef} color={value} style={{ width: "200px", height: "160px" }} />
           <div className="flex items-center gap-1.5">
             <input
@@ -75,7 +96,8 @@ export function ColorPicker({ value, onChange, title, extra }: ColorPickerProps)
             />
             {extra}
           </div>
-        </div>
+        </div>,
+        document.body
       )}
     </div>
   )

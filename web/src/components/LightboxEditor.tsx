@@ -46,20 +46,31 @@ type DragKind =
 
 interface Xform { cx: number; cy: number; w: number; h: number; rot: number }
 
-/** Numeric field that commits on blur/Enter and re-syncs when the value changes */
-function NumField({ label, value, onCommit, width = "flex-1", step = 1 }: {
-  label: string; value: number; onCommit: (v: number) => void; width?: string; step?: number
+/** Numeric field that commits on blur/Enter (or on every keystroke with `live`) */
+function NumField({ label, value, onCommit, width = "flex-1", step = 1, live = false }: {
+  label: string; value: number; onCommit: (v: number) => void; width?: string; step?: number; live?: boolean
 }) {
+  const editing = useRef(false)
   return (
     <label className={`flex items-center gap-1 rounded-md border border-border bg-muted/30 px-1.5 h-7 ${width}`}>
-      <span className="text-[10px] text-muted-foreground w-3 shrink-0">{label}</span>
+      {label && <span className="text-[10px] text-muted-foreground w-3 shrink-0">{label}</span>}
       <input
-        key={value}
+        key={live && editing.current ? "editing" : value}
         type="number"
         defaultValue={Math.round(value * 10) / 10}
         step={step}
         className="w-full min-w-0 bg-transparent text-xs outline-none tabular-nums [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
-        onBlur={e => { const v = parseFloat(e.target.value); if (Number.isFinite(v)) onCommit(v) }}
+        onFocus={() => { editing.current = true }}
+        onChange={e => {
+          if (!live) return
+          const v = parseFloat(e.target.value)
+          if (Number.isFinite(v)) onCommit(v)
+        }}
+        onBlur={e => {
+          editing.current = false
+          const v = parseFloat(e.target.value)
+          if (Number.isFinite(v)) onCommit(v)
+        }}
         onKeyDown={e => {
           if (e.key === "Enter") {
             const v = parseFloat((e.target as HTMLInputElement).value)
@@ -90,6 +101,9 @@ export function LightboxEditor({ open, imageUrl, aspect, title, initial, applyin
   const [aspectLock, setAspectLock] = useState(true)
   const [sampling, setSampling] = useState(false)
   const [cursor, setCursor] = useState("default")
+  // Deselect (click empty workspace) hides the outline/handles so the actual
+  // result — radius, border, edges — is visible unobstructed
+  const [selected, setSelected] = useState(true)
   const dragRef = useRef<DragKind | null>(null)
 
   const frame = (() => {
@@ -107,6 +121,7 @@ export function LightboxEditor({ open, imageUrl, aspect, title, initial, applyin
     if (!open) return
     setImgReady(false)
     setSampling(false)
+    setSelected(true)
     setBg(initial?.bg ?? "#000000")
     setRadius(initial?.radius ?? 0)
     setBorderColor(initial?.border?.color ?? "#ffffff")
@@ -209,20 +224,22 @@ export function LightboxEditor({ open, imageUrl, aspect, title, initial, applyin
     ctx.lineWidth = 1.5
     ctx.strokeRect(frame.x + 0.5, frame.y + 0.5, frame.w - 1, frame.h - 1)
 
-    const pts = corners(xf)
-    ctx.strokeStyle = "rgba(99,179,237,0.9)"
-    ctx.lineWidth = 1
-    ctx.beginPath()
-    pts.forEach((p, i) => i === 0 ? ctx.moveTo(p.x, p.y) : ctx.lineTo(p.x, p.y))
-    ctx.closePath()
-    ctx.stroke()
-    for (const p of pts) {
-      ctx.fillStyle = "#fff"
-      ctx.strokeStyle = "rgba(0,0,0,0.6)"
-      ctx.fillRect(p.x - HANDLE / 2, p.y - HANDLE / 2, HANDLE, HANDLE)
-      ctx.strokeRect(p.x - HANDLE / 2, p.y - HANDLE / 2, HANDLE, HANDLE)
+    if (selected) {
+      const pts = corners(xf)
+      ctx.strokeStyle = "rgba(99,179,237,0.9)"
+      ctx.lineWidth = 1
+      ctx.beginPath()
+      pts.forEach((p, i) => i === 0 ? ctx.moveTo(p.x, p.y) : ctx.lineTo(p.x, p.y))
+      ctx.closePath()
+      ctx.stroke()
+      for (const p of pts) {
+        ctx.fillStyle = "#fff"
+        ctx.strokeStyle = "rgba(0,0,0,0.6)"
+        ctx.fillRect(p.x - HANDLE / 2, p.y - HANDLE / 2, HANDLE, HANDLE)
+        ctx.strokeRect(p.x - HANDLE / 2, p.y - HANDLE / 2, HANDLE, HANDLE)
+      }
     }
-  }, [open, imgReady, xf, bg, radius, borderColor, borderWidth, k, frame.x, frame.y, frame.w, frame.h, corners])
+  }, [open, imgReady, xf, bg, radius, borderColor, borderWidth, k, selected, frame.x, frame.y, frame.w, frame.h, corners])
 
   // ─── Pointer interaction ─────────────────────────────────────────────────
   const canvasPoint = (e: React.PointerEvent) => {
@@ -259,6 +276,15 @@ export function LightboxEditor({ open, imageUrl, aspect, title, initial, applyin
       return
     }
     const hit = hitTest(p)
+    // Deselected: only a click on the image itself reselects (and starts a move)
+    if (!selected) {
+      if (hit.type === "inside" || hit.type === "corner") {
+        setSelected(true)
+        dragRef.current = { kind: "move", start: p, base: { x: xf.cx, y: xf.cy } }
+        ;(e.target as HTMLElement).setPointerCapture(e.pointerId)
+      }
+      return
+    }
     if (hit.type === "corner") {
       const pts = corners(xf)
       const anchor = pts[(hit.corner + 2) % 4]
@@ -272,7 +298,10 @@ export function LightboxEditor({ open, imageUrl, aspect, title, initial, applyin
       dragRef.current = { kind: "rotate", lastAngle: Math.atan2(p.y - xf.cy, p.x - xf.cx) }
     } else if (hit.type === "inside") {
       dragRef.current = { kind: "move", start: p, base: { x: xf.cx, y: xf.cy } }
-    } else return
+    } else {
+      setSelected(false)
+      return
+    }
     ;(e.target as HTMLElement).setPointerCapture(e.pointerId)
   }
 
@@ -284,7 +313,8 @@ export function LightboxEditor({ open, imageUrl, aspect, title, initial, applyin
       if (sampling) { setCursor("crosshair"); return }
       const hit = hitTest(p)
       setCursor(
-        hit.type === "corner" ? "nwse-resize"
+        !selected ? (hit.type === "inside" || hit.type === "corner" ? "move" : "default")
+        : hit.type === "corner" ? "nwse-resize"
         : hit.type === "rotate" ? ROTATE_CURSOR
         : hit.type === "inside" ? "move"
         : "default")
@@ -435,21 +465,21 @@ export function LightboxEditor({ open, imageUrl, aspect, title, initial, applyin
                 <NumField label="X" value={posX} onCommit={setX} />
                 <NumField label="Y" value={posY} onCommit={setY} />
               </div>
-              <div className="flex items-center gap-1.5">
+              <div className="flex items-center">
                 <NumField label="W" value={sizeW} onCommit={setW} />
-                <NumField label="H" value={sizeH} onCommit={setH} />
                 <button
-                  className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-md border transition-colors ${
-                    aspectLock ? "border-primary/50 bg-primary/10 text-foreground" : "border-border text-muted-foreground hover:text-foreground hover:bg-accent"
+                  className={`flex h-7 w-6 shrink-0 items-center justify-center transition-colors ${
+                    aspectLock ? "text-foreground" : "text-muted-foreground/50 hover:text-foreground"
                   }`}
-                  title={aspectLock ? "Aspect ratio locked" : "Aspect ratio unlocked"}
+                  title={aspectLock ? "Aspect ratio linked — click to unlink" : "Aspect ratio unlinked — click to link"}
                   onClick={() => setAspectLock(v => !v)}
                 >
                   {aspectLock ? <Link2 className="h-3.5 w-3.5" /> : <Link2Off className="h-3.5 w-3.5" />}
                 </button>
+                <NumField label="H" value={sizeH} onCommit={setH} />
               </div>
               <div className="flex items-center gap-1.5">
-                <NumField label="∠" value={rotDisplay} onCommit={setRot} width="w-[104px]" step={0.5} />
+                <NumField label="∠" value={rotDisplay} onCommit={setRot} width="w-[72px]" step={1} live />
                 <span className="text-[10px] text-muted-foreground">degrees</span>
               </div>
             </div>
@@ -474,13 +504,21 @@ export function LightboxEditor({ open, imageUrl, aspect, title, initial, applyin
               </div>
               <div className="flex items-center justify-between gap-1.5">
                 <span className="text-[11px] text-muted-foreground">Radius</span>
-                <NumField label="" value={radius} onCommit={v => setRadius(Math.max(0, v))} width="w-[88px]" />
+                <NumField label="" value={radius} onCommit={v => setRadius(Math.max(0, v))} width="w-[88px]" live />
               </div>
               <div className="flex items-center justify-between gap-1.5">
                 <span className="text-[11px] text-muted-foreground">Border</span>
                 <div className="flex items-center gap-1.5">
-                  <ColorPicker value={borderColor} onChange={setBorderColor} title="Border color" />
-                  <NumField label="" value={borderWidth} onCommit={v => setBorderWidth(Math.max(0, v))} width="w-[64px]" />
+                  <ColorPicker
+                    value={borderColor}
+                    onChange={c => {
+                      setBorderColor(c)
+                      // Picking a color implies wanting a border — give it width
+                      setBorderWidth(w => w > 0 ? w : 8)
+                    }}
+                    title="Border color"
+                  />
+                  <NumField label="" value={borderWidth} onCommit={v => setBorderWidth(Math.max(0, v))} width="w-[64px]" live />
                 </div>
               </div>
               {sampling && <p className="text-[10px] text-primary">Click the image to sample…</p>}
