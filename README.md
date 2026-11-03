@@ -61,6 +61,52 @@ Runs Vite dev server (with hot reload) and the backend API server concurrently. 
 
 > **Note:** Your computer and the display must be on the same network. The display downloads the image from a local HTTP server on your machine, so firewalls must allow inbound connections on the server port (default 3001).
 
+## Docker
+
+```bash
+cp .env.example .env   # set TZ (and LOCAL_IP if needed)
+mkdir -p gallery       # optional artwork library: gallery/<category>/<name>.jpg
+docker compose up -d --build
+```
+
+The web UI is then at **http://&lt;host&gt;:3001**.
+
+The compose file uses **host networking**, which a Linux host needs for all features to work:
+
+- the display downloads pushed images from this server, so it must be reachable at the host's LAN IP
+- display discovery (SSDP multicast) and Wake-on-LAN (UDP broadcast) must reach the LAN
+
+If the server logs a `Network:` address that isn't the host's LAN IP (auto-detection only checks `eth0`/`en0`), set `LOCAL_IP` in `.env`.
+
+Set `TZ` (for example `America/Chicago`). Scheduled wake timers are sent to the display in server-local time, and the container otherwise runs in UTC.
+
+| Volume                 | Container path                                           | Contents                                 |
+| ---------------------- | -------------------------------------------------------- | ---------------------------------------- |
+| `displays`             | `/app/web/.displays`                                     | Displays, queues, history, scenes        |
+| `./gallery` (bind, ro) | `/app/web/.gallery`                                      | Artwork library                          |
+| `models`               | `/app/web/node_modules/@huggingface/transformers/.cache` | Depth model (~95 MB, fetched on first use) |
+
+**Docker Desktop (macOS/Windows):** host networking doesn't reach your LAN. Publish the port and pass your machine's LAN IP instead. Pushing works this way, but discovery and Wake-on-LAN don't, so add displays by IP and wake them some other way.
+
+```bash
+docker run -d --name samsung-emdx -p 3001:3001 \
+  -e LOCAL_IP=192.168.1.20 -e TZ=America/Chicago --env-file .env \
+  -v emdx-displays:/app/web/.displays -v emdx-models:/app/web/node_modules/@huggingface/transformers/.cache \
+  samsung-emdx:latest
+```
+
+**CLI in the container:**
+
+```bash
+docker run --rm --network host samsung-emdx node /app/bin/index.mjs discover
+```
+
+**Building for another architecture** (for example on an Apple Silicon Mac, for an x86 server):
+
+```bash
+docker buildx build --platform linux/amd64 -t samsung-emdx:latest --load .
+```
+
 ## CLI
 
 You can also push images directly from the command line without the web UI.

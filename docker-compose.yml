@@ -1,0 +1,27 @@
+services:
+  emdx:
+    build: .
+    image: samsung-emdx:latest
+    container_name: samsung-emdx
+    restart: unless-stopped
+
+    # Host networking lets SSDP discovery and Wake-on-LAN broadcasts reach the
+    # LAN, and lets the display fetch images from this host. Linux only — on
+    # Docker Desktop (macOS/Windows) see "Docker" in the README.
+    network_mode: host
+
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      # Wake timers are set from server-local time; match the display's zone
+      TZ: ${TZ:-UTC}
+
+    volumes:
+      - displays:/app/web/.displays
+      - ./gallery:/app/web/.gallery:ro
+      - models:/app/web/node_modules/@huggingface/transformers/.cache
+
+volumes:
+  displays:
+  models:

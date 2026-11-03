@@ -22,7 +22,10 @@ if (fs.existsSync(rootEnv) && !process.env.DISPLAY_HOST) {
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 50 * 1024 * 1024 } });
 
 const PORT = parseInt(process.env.PORT || '3001', 10);
-const localIp = getLocalIp();
+// The display fetches pushed images from this address. Auto-detection only
+// checks eth0/en0, which inside Docker is the container's own IP — set
+// LOCAL_IP to the host's LAN address when that isn't reachable from the display.
+const localIp = process.env.LOCAL_IP || getLocalIp();
 
 const pendingImages = new Map();
 
