@@ -1,3 +1,7 @@
+import type { Adjust } from "../../eink.mjs"
+
+export type { Adjust }
+
 export interface DisplayConfig {
   id: string
   name: string
@@ -93,6 +97,8 @@ export interface QueueEdit {
   radius?: number
   /** Transform mode: border drawn around the placed image */
   border?: { color: string; width: number } | null
+  /** Tone/color adjustment for e-paper, applied to the art only */
+  adjust?: Adjust | null
 }
 
 /** A gallery library item served by the backend */

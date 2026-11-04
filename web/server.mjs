@@ -10,6 +10,7 @@ import getLocalIp from '@loxjs/node-local-ip';
 import sharp from 'sharp';
 import { Device, discover } from '../lib/index.mjs';
 import { fetchFromProvider, downloadImage, BUILT_IN_PROVIDERS } from './providers.mjs';
+import { adjustPixels, sanitizeAdjust, sharpenOptions } from './eink.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -383,6 +384,17 @@ function frameDims(display) {
   return frameOrientation(display) === 'landscape' ? [2560, 1440] : [1440, 2560];
 }
 
+// Tone/color adjustment (same per-pixel math as the editor preview), then an
+// optional unsharp mask at output resolution. Returns a sharp pipeline.
+async function adjusted(img, adjust) {
+  if (!adjust) return img;
+  const { data, info } = await img.ensureAlpha().raw().toBuffer({ resolveWithObject: true });
+  adjustPixels(data, 4, adjust);
+  const out = sharp(data, { raw: { width: info.width, height: info.height, channels: 4 } });
+  const sharpen = sharpenOptions(adjust.sharpen);
+  return sharpen ? out.sharpen(sharpen) : out;
+}
+
 async function applyQueueEdit(buffer, edit, display = null) {
   if (!edit) return buffer;
   const bg = /^#[0-9a-fA-F]{6}$/.test(edit.bg || '') ? edit.bg : '#000000';
@@ -399,7 +411,8 @@ async function applyQueueEdit(buffer, edit, display = null) {
       ? edit.offset : { x: 0, y: 0 };
     const sw0 = Math.max(1, Math.round(FW * sX));
     const sh0 = Math.max(1, Math.round(FH * sY));
-    let art = await sharp(buffer).resize(sw0, sh0, { fit: 'fill' }).ensureAlpha().png().toBuffer();
+    const sized = await adjusted(sharp(buffer).resize(sw0, sh0, { fit: 'fill' }), edit.adjust);
+    let art = await sized.ensureAlpha().png().toBuffer();
 
     // Corner radius (dest-in mask) and border (stroked overlay), both in
     // display pixels — the same units the editor sidebar shows
@@ -439,6 +452,7 @@ async function applyQueueEdit(buffer, edit, display = null) {
 
   let buf = buffer;
   if (rot) buf = await sharp(buf).rotate(rot, { background: bg }).jpeg({ quality: 92 }).toBuffer();
+  if (edit.adjust) buf = await (await adjusted(sharp(buf), edit.adjust)).removeAlpha().jpeg({ quality: 92 }).toBuffer();
 
   if (mode === 'crop') {
     const c = edit.crop;
@@ -1378,9 +1392,10 @@ app.get('/api/displays/:displayId/queue/image/:imageId', resolveDisplay, async (
 
 // Presentation override for a queued image: how it should be displayed.
 // Body: { mode?: 'crop'|'fit'|'stretch', rotation: degrees,
-//         crop: {x,y,width,height}|null, zoom?, offset?: {x,y}, bg?: '#rrggbb' }
+//         crop: {x,y,width,height}|null, zoom?, offset?: {x,y}, bg?: '#rrggbb',
+//         adjust?: {brightness, contrast, saturation, midtones, sharpen} }
 function sanitizeEdit(body) {
-  const { mode, rotation, crop, zoom, scaleX, scaleY, offset, bg, radius, border } = body ?? {};
+  const { mode, rotation, crop, zoom, scaleX, scaleY, offset, bg, radius, border, adjust } = body ?? {};
   const m = ['fit', 'stretch', 'transform'].includes(mode) ? mode : 'crop';
   const rot = Number.isFinite(rotation) ? ((rotation % 360) + 360) % 360 : 0;
   const validCrop = crop && [crop.x, crop.y, crop.width, crop.height].every(Number.isFinite)
@@ -1402,8 +1417,9 @@ function sanitizeEdit(body) {
     border: border && /^#[0-9a-fA-F]{6}$/.test(border.color || '') && Number.isFinite(border.width) && border.width > 0
       ? { color: border.color, width: Math.min(border.width, 200) }
       : null,
+    adjust: sanitizeAdjust(adjust),
   };
-  const isNoop = m === 'crop' && rot === 0 && !validCrop;
+  const isNoop = m === 'crop' && rot === 0 && !validCrop && !edit.adjust;
   return isNoop ? null : edit;
 }
 

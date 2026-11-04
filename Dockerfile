@@ -41,7 +41,7 @@ RUN cd web && npm ci --omit=dev && npm cache clean --force \
 
 COPY lib/ lib/
 COPY bin/ bin/
-COPY web/server.mjs web/providers.mjs web/depth.mjs web/
+COPY web/server.mjs web/providers.mjs web/depth.mjs web/eink.mjs web/
 COPY --from=frontend /app/web/dist web/dist
 
 # Writable state, owned by the unprivileged user so named volumes inherit it:
