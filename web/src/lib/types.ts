@@ -41,6 +41,40 @@ export interface Scene {
   locked?: boolean
 }
 
+/** App-wide settings, set from the web UI and stored on the server */
+export interface AppSettings {
+  /** Address displays download images from; null falls back to detection */
+  serverAddress: string | null
+  /** null when it can't be known, such as inside Docker Desktop */
+  detectedAddress: string | null
+  timeZone: string | null
+  port: number
+}
+
+export const WALLPAPER_COLORS =["white", "black", "red", "green", "blue", "yellow"] as const
+
+/** Settings stored on the display itself. null means it couldn't be read. */
+export interface DeviceSettings {
+  orientation: "landscape" | "portrait" | null
+  source: "default" | "usb" | null
+  wallpaperColor: (typeof WALLPAPER_COLORS)[number] | null
+  pictureMode: "vivid" | "custom" | null
+  /** Only applies in the custom picture mode */
+  color: number | null
+  sleepMode: "standby" | "deep" | null
+  /** Minutes; null while the display is on its built-in preset */
+  sleepAfter: number | null
+  sleepWhenContentDone: boolean | null
+  batteryWarning: boolean | null
+  /** "HH:MM" */
+  screenProtectorTime: string | null
+  buttonLock: boolean | null
+  usbLock: boolean | null
+  deviceName: string | null
+  time: { ntp: boolean; server: string; zone: string } | null
+  clock: { day: number; hour: number; minute: number; month: number; year: number; pm: boolean } | null
+}
+
 export interface DiscoveredDisplay {
   host: string
   name: string

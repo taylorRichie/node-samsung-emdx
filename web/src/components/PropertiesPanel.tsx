@@ -10,6 +10,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } f
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { RailPanelShell } from "@/components/RightRail"
+import { DeviceSettingsSection } from "@/components/DeviceSettingsSection"
 import { LightboxEditor, displayAspect, type LightboxResult } from "@/components/LightboxEditor"
 import type {
   DisplayConfig, DisplayStatus, SleepMode,
@@ -451,6 +452,15 @@ export function PropertiesPanel({
             </div>
           ) : null}
         </div>
+
+        <Divider />
+
+        <DeviceSettingsSection
+          key={display.id}
+          api={api}
+          configured={!!display.host && !!display.pin}
+          onPinChanged={newPin => { setPin(newPin); saveField({ pin: newPin }) }}
+        />
 
         <Divider />
 

@@ -17,6 +17,7 @@ A browser-based UI for cropping and pushing images to the display.
 - Battery status monitoring
 - Last pushed image preview (persisted across sessions)
 - Connection settings saved in browser
+- Device settings stored on the display: orientation, source, wallpaper color, picture mode, sleep, battery warning, screen protection time, time zone, PIN, and button and USB locks
 
 ### Quick Start
 

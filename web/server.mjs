@@ -8,7 +8,7 @@ import express from 'express';
 import multer from 'multer';
 import getLocalIp from '@loxjs/node-local-ip';
 import sharp from 'sharp';
-import { Device, discover } from '../lib/index.mjs';
+import { Device, discover, SETTINGS } from '../lib/index.mjs';
 import { fetchFromProvider, downloadImage, BUILT_IN_PROVIDERS } from './providers.mjs';
 import { adjustPixels, sanitizeAdjust, sharpenOptions } from './eink.mjs';
 
@@ -994,6 +994,80 @@ app.get('/api/displays/:displayId/status', resolveDisplay, async (req, res) => {
   } catch (err) {
     noteStatus(req.params.displayId, null);
     res.status(500).json({ error: err.message });
+  }
+});
+
+// ─── Per-display: Device settings ───────────────────────────────────────────
+// These live on the display itself, so it has to be awake. It only takes one
+// MDC session at a time, so requests for the same display run in turn.
+
+const settingsQueues = new Map();
+
+function settingsInTurn(displayId, task) {
+  const run = (settingsQueues.get(displayId) ?? Promise.resolve()).catch(() => {}).then(task);
+  settingsQueues.set(displayId, run);
+  return run;
+}
+
+async function withDevice({ host, pin, mac }, task) {
+  const device = new Device({ host, mac: mac || undefined, pin });
+  await device.connect({ timeout: 8_000 });
+  try {
+    return await task(device);
+  } finally {
+    await device.disconnect();
+  }
+}
+
+// Socket errors carry a code; everything else (wrong PIN, timeouts) reads fine as is
+const settingsError = (err) => (err.code ? "Couldn't reach the display. It may be asleep." : err.message);
+
+app.get('/api/displays/:displayId/settings', resolveDisplay, async (req, res) => {
+  const displayId = req.params.displayId;
+  const { host, pin } = req.display;
+  if (!host || !pin) return res.status(400).json({ error: 'Display has no host/pin configured' });
+  try {
+    res.json(await settingsInTurn(displayId, () => withDevice(getDisplay(displayId), async device => ({
+      settings: await device.getSettings(),
+      timeZones: await device.getTimeZones().catch(() => []),
+    }))));
+  } catch (err) {
+    res.status(500).json({ error: settingsError(err) });
+  }
+});
+
+// Body: any of the names in SETTINGS, e.g. { orientation: 'portrait' }. Applied
+// in SETTINGS order, so a PIN change is always the last write of the session.
+app.put('/api/displays/:displayId/settings', resolveDisplay, async (req, res) => {
+  const displayId = req.params.displayId;
+  const { host, pin } = req.display;
+  if (!host || !pin) return res.status(400).json({ error: 'Display has no host/pin configured' });
+
+  const changes = req.body ?? {};
+  const names = Object.keys(SETTINGS).filter(name => changes[name] !== undefined);
+  if (!names.length) return res.status(400).json({ error: 'No known settings in request' });
+  try {
+    for (const name of names) SETTINGS[name].encode(changes[name]);
+  } catch (err) {
+    return res.status(400).json({ error: err.message });
+  }
+
+  try {
+    await settingsInTurn(displayId, () => withDevice(getDisplay(displayId), async device => {
+      for (const name of names) await device.setSetting(name, changes[name]);
+      // Save inside the turn, so the next queued request logs in with the new PIN
+      if (changes.pin) {
+        const displays = loadDisplays();
+        displays.find(d => d.id === displayId).pin = changes.pin;
+        saveDisplays(displays);
+      }
+    }));
+    // Keep the status every client shows in step with what just changed
+    if (changes.sleepMode) noteStatus(displayId, { networkStandby: changes.sleepMode === 'standby' });
+    if (changes.deviceName) noteStatus(displayId, { deviceName: changes.deviceName });
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ error: settingsError(err) });
   }
 });
 
