@@ -8,3 +8,5 @@ web/.displays/
 Artwork/
 .claude/
 gallery/
+tools/.mdc-proxy/
+mdc-capture-*.jsonl
