@@ -1,7 +1,7 @@
 import { useState, useCallback, useEffect } from "react"
 import { Toaster, toast } from "sonner"
 import {
-  Monitor, RefreshCw, Palette, Plus, Radar, Check,
+  Monitor, RefreshCw, Palette, Plus, Radar, Check, Settings,
 } from "lucide-react"
 
 import { Button } from "@/components/ui/button"
@@ -15,7 +15,9 @@ import { LeftRail } from "@/components/LeftRail"
 import { GalleryPanel } from "@/components/GalleryPanel"
 import { PropertiesPanel } from "@/components/PropertiesPanel"
 import { QueuePanel } from "@/components/QueuePanel"
-import type { DisplayConfig, DisplayStatus, DiscoveredDisplay, Scene } from "@/lib/types"
+import { ServerSettingsDialog } from "@/components/ServerSettingsDialog"
+import type { AppSettings, DisplayConfig, DisplayStatus, DiscoveredDisplay, Scene } from "@/lib/types"
+import { addressFromBrowser } from "@/lib/utils"
 
 const ACCENT_THEMES = [
   { id: "default", label: "Default", swatch: "hsl(0 0% 98%)" },
@@ -66,6 +68,38 @@ export default function App() {
   const [newHost, setNewHost] = useState("")
   const [newPin, setNewPin] = useState("")
   const [newMac, setNewMac] = useState("")
+  const [newServerAddress, setNewServerAddress] = useState(addressFromBrowser)
+
+  // Server settings: without an address, displays can't download images
+  const [appSettings, setAppSettings] = useState<AppSettings | null>(null)
+  const [serverSettingsOpen, setServerSettingsOpen] = useState(false)
+  const needsServerAddress = !!appSettings && !appSettings.serverAddress && !appSettings.detectedAddress
+
+  const saveAppSettings = useCallback(async (patch: { serverAddress?: string; timeZone?: string }) => {
+    const res = await fetch("/api/app-settings", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(patch),
+    })
+    const data = await res.json().catch(() => ({})) as AppSettings & { reachable?: boolean | null; error?: string }
+    if (!res.ok) throw new Error(data.error || "Couldn't save settings")
+    setAppSettings(data)
+    if (data.reachable === false) {
+      toast.warning(`Saved, but ${data.serverAddress} didn't lead back to this app. Check it's this computer's current IP address.`)
+    }
+  }, [])
+
+  // The browser knows the user's time zone, so a new install needn't ask
+  useEffect(() => {
+    fetch("/api/app-settings")
+      .then(res => (res.ok ? res.json() as Promise<AppSettings> : null))
+      .then(settings => {
+        if (!settings) return
+        setAppSettings(settings)
+        if (!settings.timeZone) return saveAppSettings({ timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone })
+      })
+      .catch(() => {})
+  }, [saveAppSettings])
 
   // Network discovery
   const [scanning, setScanning] = useState(false)
@@ -176,6 +210,7 @@ export default function App() {
   const handleAddDisplay = async () => {
     if (!newName.trim()) { toast.error("Display name is required"); return }
     try {
+      if (needsServerAddress && newServerAddress.trim()) await saveAppSettings({ serverAddress: newServerAddress.trim() })
       const res = await fetch("/api/displays", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -313,6 +348,15 @@ export default function App() {
           <Button variant="ghost" size="icon" className="h-8 w-8" onClick={fetchAllStatuses} disabled={refreshing} title="Refresh all statuses">
             <RefreshCw className={`h-4 w-4 ${refreshing ? "animate-spin" : ""}`} />
           </Button>
+          <Button
+            variant="ghost" size="icon" className="relative h-8 w-8"
+            title={needsServerAddress ? "Server settings: this computer's IP address is needed" : "Server settings"}
+            aria-label="Server settings"
+            onClick={() => setServerSettingsOpen(true)}
+          >
+            <Settings className="h-4 w-4" />
+            {needsServerAddress && <span className="absolute right-1 top-1 h-2 w-2 rounded-full bg-amber-500" />}
+          </Button>
         </div>
       </div>
 
@@ -371,7 +415,7 @@ export default function App() {
               </Button>
               {scanned && discovered.length === 0 && (
                 <p className="text-xs text-muted-foreground text-center">
-                  No displays found. Sleeping displays don't respond — wake them and rescan.
+                  No displays found. Sleeping displays don't respond, and Docker Desktop can't scan your network, so you can enter the details below instead.
                 </p>
               )}
               {discovered.length > 0 && (
@@ -419,6 +463,15 @@ export default function App() {
               <Label className="text-xs">MAC Address <span className="text-muted-foreground">(for Wake-on-LAN)</span></Label>
               <Input value={newMac} onChange={e => setNewMac(e.target.value)} placeholder="00:11:22:33:44:55" className="h-9" />
             </div>
+            {needsServerAddress && (
+              <div className="space-y-1">
+                <Label className="text-xs">This computer's IP address</Label>
+                <Input value={newServerAddress} onChange={e => setNewServerAddress(e.target.value)} placeholder="192.168.1.20" className="h-9" />
+                <p className="text-[11px] text-muted-foreground">
+                  Displays download images from this address. On a Mac, run ipconfig getifaddr en0 to find it.
+                </p>
+              </div>
+            )}
           </div>
           <div className="flex justify-end gap-2 pt-2">
             <Button variant="outline" onClick={() => setAddDialogOpen(false)}>Cancel</Button>
@@ -426,6 +479,14 @@ export default function App() {
           </div>
         </DialogContent>
       </Dialog>
+
+      {serverSettingsOpen && (
+        <ServerSettingsDialog
+          settings={appSettings}
+          onSave={saveAppSettings}
+          onClose={() => setServerSettingsOpen(false)}
+        />
+      )}
     </div>
   )
 }

@@ -1,12 +1,11 @@
 import fs from 'fs';
+import os from 'os';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { randomUUID } from 'crypto';
 
-import 'dotenv/config';
 import express from 'express';
 import multer from 'multer';
-import getLocalIp from '@loxjs/node-local-ip';
 import sharp from 'sharp';
 import { Device, discover, SETTINGS } from '../lib/index.mjs';
 import { fetchFromProvider, downloadImage, BUILT_IN_PROVIDERS } from './providers.mjs';
@@ -14,19 +13,11 @@ import { adjustPixels, sanitizeAdjust, sharpenOptions } from './eink.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
-const rootEnv = path.join(__dirname, '..', '.env');
-if (fs.existsSync(rootEnv) && !process.env.DISPLAY_HOST) {
-  const { config } = await import('dotenv');
-  config({ path: rootEnv });
-}
-
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 50 * 1024 * 1024 } });
 
 const PORT = parseInt(process.env.PORT || '3001', 10);
-// The display fetches pushed images from this address. Auto-detection only
-// checks eth0/en0, which inside Docker is the container's own IP — set
-// LOCAL_IP to the host's LAN address when that isn't reachable from the display.
-const localIp = process.env.LOCAL_IP || getLocalIp();
+// Identifies this process, so the address check can tell it reached us
+const SERVER_ID = randomUUID();
 
 const pendingImages = new Map();
 
@@ -115,6 +106,44 @@ function getAllDisplayProviders(displayId) {
   return [...BUILT_IN_PROVIDERS, ...config.customProviders];
 }
 
+// ─── App settings ─────────────────────────────────────────────────────────────
+// Set from the web UI and stored alongside the displays.
+
+const APP_SETTINGS_JSON = path.join(DISPLAYS_DIR, 'app-settings.json');
+
+function loadAppSettings() {
+  return readJson(APP_SETTINGS_JSON, {});
+}
+
+// Wake timers are set from server-local time, so the process runs in the
+// user's zone. Node picks up a change to TZ at runtime.
+function applyTimeZone() {
+  const { timeZone } = loadAppSettings();
+  if (timeZone) process.env.TZ = timeZone;
+}
+applyTimeZone();
+
+// This machine's LAN address, or null if it can't be known: inside Docker's
+// bridge network the only address is the container's own, which the display
+// can't reach.
+function detectAddress(displayHost) {
+  const addresses = Object.entries(os.networkInterfaces())
+    .filter(([name]) => !/^(lo|docker|br-|veth|utun|tun|awdl|llw|bridge)/.test(name))
+    .flatMap(([, list]) => list.filter(a => a.family === 'IPv4' && !a.internal).map(a => a.address));
+
+  const isBridged = fs.existsSync('/.dockerenv')
+    && addresses.every(a => /^(172\.(1[6-9]|2\d|3[01])\.|192\.168\.65\.)/.test(a));
+  if (isBridged) return null;
+
+  const subnet = (ip) => ip.split('.').slice(0, 3).join('.');
+  return addresses.find(a => displayHost && subnet(a) === subnet(displayHost)) ?? addresses[0] ?? null;
+}
+
+// Where a display should fetch pushed images from
+function serverAddress(displayHost) {
+  return loadAppSettings().serverAddress || detectAddress(displayHost);
+}
+
 // ─── Migration from single-display .queue/ ────────────────────────────────────
 
 function migrateFromSingleDisplay() {
@@ -122,12 +151,8 @@ function migrateFromSingleDisplay() {
 
   const oldQueueDir = path.join(__dirname, '.queue');
   const oldLastImage = path.join(__dirname, '.last-push.jpg');
-  const host = process.env.DISPLAY_HOST || '';
-  const pin = process.env.DISPLAY_PIN || '';
-  const mac = process.env.DISPLAY_MAC || '';
-  const sleepAfter = parseInt(process.env.DISPLAY_SLEEP_AFTER || '20', 10);
 
-  if (!host && !fs.existsSync(oldQueueDir)) {
+  if (!fs.existsSync(oldQueueDir)) {
     ensureDisplaysDir();
     saveDisplays([]);
     return;
@@ -135,7 +160,7 @@ function migrateFromSingleDisplay() {
 
   const id = randomUUID();
   const display = {
-    id, name: 'Display 1', host, pin, mac, sleepAfter,
+    id, name: 'Display 1', host: '', pin: '', mac: '', sleepAfter: 20,
     canvasX: 100, canvasY: 50, canvasWidth: 180, canvasHeight: 320,
   };
 
@@ -253,11 +278,14 @@ async function performSleep(displayId, { host, pin, mac, sleepMode }) {
 // ─── Push Helpers ─────────────────────────────────────────────────────────────
 
 async function pushImageToDisplay({ imageBuffer, host, pin, mac, displayId, lastImageBuffer, skipHistory = false }) {
+  const address = serverAddress(host);
+  if (!address) throw new Error("This server's address isn't set, so the display can't download images. Add it in Server settings (gear icon, top right).");
+
   const pushId = randomUUID().toUpperCase();
   const fileId = randomUUID().toUpperCase();
   const fileName = `${fileId}.jpg`;
-  const imageUrl = `http://${localIp}:${PORT}/api/display-content/${pushId}/image`;
-  const contentUrl = `http://${localIp}:${PORT}/api/display-content/${pushId}/content.json`;
+  const imageUrl = `http://${address}:${PORT}/api/display-content/${pushId}/image`;
+  const contentUrl = `http://${address}:${PORT}/api/display-content/${pushId}/content.json`;
 
   const tag = displayId ? ` [${displayId.slice(0, 8)}]` : '';
   console.log(`\n🖼  Push ${pushId}${tag}`);
@@ -266,7 +294,7 @@ async function pushImageToDisplay({ imageBuffer, host, pin, mac, displayId, last
   const imageServed = new Promise((resolve, reject) => {
     const timeout = setTimeout(() => {
       pendingImages.delete(pushId);
-      reject(new Error('Display did not download the image within 30 seconds'));
+      reject(new Error(`Display did not download the image within 30 seconds. It was told to fetch from ${address}:${PORT}, so check that's this server's current address in Server settings (gear icon, top right).`));
     }, 30_000);
 
     pendingImages.set(pushId, {
@@ -740,6 +768,60 @@ app.use(express.json());
 // ─── Display CRUD ────────────────────────────────────────────────────────────
 
 app.get('/api/displays', (_req, res) => res.json(loadDisplays()));
+
+// ─── App settings ───────────────────────────────────────────────────────────
+
+function appSettingsResponse() {
+  const { serverAddress: saved, timeZone } = loadAppSettings();
+  return {
+    serverAddress: saved || null,
+    detectedAddress: detectAddress(loadDisplays()[0]?.host),
+    timeZone: timeZone || null,
+    port: PORT,
+  };
+}
+
+// Fetches this server through the given address. It can't prove the display
+// can reach it, but it does catch a mistyped or out-of-date address.
+async function addressReachesThisServer(address) {
+  try {
+    const res = await fetch(`http://${address}:${PORT}/api/server-check`, { signal: AbortSignal.timeout(2_500) });
+    return (await res.json()).id === SERVER_ID;
+  } catch {
+    return false;
+  }
+}
+
+app.get('/api/server-check', (_req, res) => res.json({ id: SERVER_ID }));
+
+app.get('/api/app-settings', (_req, res) => res.json(appSettingsResponse()));
+
+// Body: { serverAddress?, timeZone? }. An empty serverAddress goes back to detection.
+app.put('/api/app-settings', async (req, res) => {
+  const { serverAddress: address, timeZone } = req.body ?? {};
+  const settings = loadAppSettings();
+
+  if (address !== undefined) {
+    const value = String(address).trim();
+    if (value && !/^[a-zA-Z0-9.-]+$/.test(value)) {
+      return res.status(400).json({ error: 'Enter an IP address, like 192.168.1.20' });
+    }
+    settings.serverAddress = value;
+  }
+  if (timeZone !== undefined) {
+    try {
+      new Intl.DateTimeFormat('en', { timeZone: String(timeZone) });
+    } catch {
+      return res.status(400).json({ error: `Unknown time zone: ${timeZone}` });
+    }
+    settings.timeZone = String(timeZone);
+  }
+
+  writeJson(APP_SETTINGS_JSON, settings);
+  applyTimeZone();
+  const reachable = address && settings.serverAddress ? await addressReachesThisServer(settings.serverAddress) : null;
+  res.json({ ...appSettingsResponse(), reachable });
+});
 
 app.post('/api/displays', (req, res) => {
   const { name, host, pin, mac, sleepAfter, canvasX, canvasY, canvasWidth, canvasHeight } = req.body;
@@ -1764,5 +1846,6 @@ app.listen(PORT, () => {
   const n = loadDisplays().length;
   console.log(`\n🚀 Samsung EMDX Web Server (${n} display${n !== 1 ? 's' : ''})`);
   console.log(`   Local:   http://localhost:${PORT}`);
-  console.log(`   Network: http://${localIp}:${PORT}\n`);
+  const address = serverAddress(loadDisplays()[0]?.host);
+  console.log(`   Network: ${address ? `http://${address}:${PORT}` : 'address not set (Server settings in the web UI)'}\n`);
 });

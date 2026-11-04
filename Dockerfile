@@ -20,8 +20,8 @@ ENV NODE_ENV=production \
     ONNXRUNTIME_NODE_INSTALL=skip \
     PORT=3001
 
-# tzdata so TZ=Region/City works — the display's wake timer is set from
-# server-local time
+# tzdata for the time zone set in the web UI — the display's wake timer is set
+# from server-local time
 RUN apt-get update \
  && apt-get install -y --no-install-recommends tzdata \
  && rm -rf /var/lib/apt/lists/*

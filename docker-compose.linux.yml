@@ -1,0 +1,8 @@
+# Linux hosts only: shares the host's network, so display discovery and
+# Wake-on-LAN broadcasts reach your LAN and this machine's IP is detected.
+#
+#   docker compose -f docker-compose.yml -f docker-compose.linux.yml up -d
+services:
+  emdx:
+    network_mode: host
+    ports: !reset []

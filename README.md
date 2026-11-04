@@ -22,33 +22,21 @@ A browser-based UI for cropping and pushing images to the display.
 ### Quick Start
 
 ```bash
-cp .env.example .env   # Edit with your display's IP, PIN, and MAC
 cd web
 npm install
 npm run start
 ```
 
-This builds the frontend and starts the server at **http://localhost:3001**.
+This builds the frontend and starts the server at **http://localhost:3001**. Choose **Add display** and enter the screen's name, IP address and PIN. There's no config file: everything is set in the web UI and stored by the app.
 
-### Environment Variables
+### Server Settings
 
-Copy `.env.example` to `.env` in the project root and fill in your display settings:
+Open these with the gear icon at the top right.
 
-```
-DISPLAY_HOST=192.168.1.37
-DISPLAY_PIN=000000
-DISPLAY_MAC=00:00:00:00:00:00
-DISPLAY_SLEEP_AFTER=20
-```
-
-| Variable              | Description                                  | Required |
-| --------------------- | -------------------------------------------- | -------- |
-| `DISPLAY_HOST`        | IP address of the display                    | Yes      |
-| `DISPLAY_PIN`         | Display PIN                                  | Yes      |
-| `DISPLAY_MAC`         | MAC address (for Wake-on-LAN)                | No       |
-| `DISPLAY_SLEEP_AFTER` | Minutes of inactivity before deep sleep (0 = never) | No |
-
-These values are used as defaults in the web UI. You can also override them from the settings panel in the browser.
+| Setting                    | What it's for                                                                 |
+| -------------------------- | ----------------------------------------------------------------------------- |
+| This computer's IP address | Displays download images from it. Detected automatically, except in Docker Desktop, where **Add display** asks for it. |
+| Time zone                  | Used for scheduled wake times. Taken from your browser the first time you open the app. |
 
 ### Development
 
@@ -65,36 +53,25 @@ Runs Vite dev server (with hot reload) and the backend API server concurrently. 
 ## Docker
 
 ```bash
-cp .env.example .env   # set TZ (and LOCAL_IP if needed)
 mkdir -p gallery       # optional artwork library: gallery/<category>/<name>.jpg
 docker compose up -d --build
 ```
 
-The web UI is then at **http://&lt;host&gt;:3001**.
+Open **http://localhost:3001** and choose **Add display**. Docker Desktop keeps the app from detecting your computer's IP address, so the dialog asks for it (on a Mac, `ipconfig getifaddr en0` shows it). If that address changes later, update it in Server settings.
 
-The compose file uses **host networking**, which a Linux host needs for all features to work:
+**Docker Desktop (macOS/Windows):** scanning for displays and Wake-on-LAN can't reach your network from Docker's VM. Add displays by IP, and wake them some other way. Everything else works.
 
-- the display downloads pushed images from this server, so it must be reachable at the host's LAN IP
-- display discovery (SSDP multicast) and Wake-on-LAN (UDP broadcast) must reach the LAN
+**Linux:** add the host networking override, so scanning and Wake-on-LAN work and your IP address is detected:
 
-If the server logs a `Network:` address that isn't the host's LAN IP (auto-detection only checks `eth0`/`en0`), set `LOCAL_IP` in `.env`.
-
-Set `TZ` (for example `America/Chicago`). Scheduled wake timers are sent to the display in server-local time, and the container otherwise runs in UTC.
+```bash
+docker compose -f docker-compose.yml -f docker-compose.linux.yml up -d --build
+```
 
 | Volume                 | Container path                                           | Contents                                 |
 | ---------------------- | -------------------------------------------------------- | ---------------------------------------- |
-| `displays`             | `/app/web/.displays`                                     | Displays, queues, history, scenes        |
+| `displays`             | `/app/web/.displays`                                     | Displays, settings, queues, history, scenes |
 | `./gallery` (bind, ro) | `/app/web/.gallery`                                      | Artwork library                          |
 | `models`               | `/app/web/node_modules/@huggingface/transformers/.cache` | Depth model (~95 MB, fetched on first use) |
-
-**Docker Desktop (macOS/Windows):** host networking doesn't reach your LAN. Publish the port and pass your machine's LAN IP instead. Pushing works this way, but discovery and Wake-on-LAN don't, so add displays by IP and wake them some other way.
-
-```bash
-docker run -d --name samsung-emdx -p 3001:3001 \
-  -e LOCAL_IP=192.168.1.20 -e TZ=America/Chicago --env-file .env \
-  -v emdx-displays:/app/web/.displays -v emdx-models:/app/web/node_modules/@huggingface/transformers/.cache \
-  samsung-emdx:latest
-```
 
 **CLI in the container:**
 
@@ -164,6 +141,7 @@ node bin/index.mjs status --host 192.168.0.123 --pin 123456
 ## Documentation
 
 - **[CLI Reference](docs/CLI.md)** — Detailed guide to all CLI commands, MDC protocol, content format, and troubleshooting
+- **[MDC Commands](docs/MDC-COMMANDS.md)** — Known command surface, and how to capture new commands from Samsung's app with `tools/mdc-proxy.mjs`
 
 ## References
 
