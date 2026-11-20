@@ -12,6 +12,20 @@ export interface Adjust {
   sharpen: number
 }
 
+export type ProfileId = "eink" | "vivid" | "bw" | "none"
+
+export interface Profile {
+  id: ProfileId
+  name: string
+  description: string
+  adjust: Adjust
+}
+
+export declare const PROFILES: readonly Profile[]
+export declare const DEFAULT_PROFILE: ProfileId
+export declare function profileAdjust(id: string | null | undefined): Adjust
+export declare function isNeutralAdjust(a: Partial<Adjust> | null | undefined): boolean
+export declare function previewSharpen(data: Uint8ClampedArray, width: number, height: number, amount: number): void
 export declare const ADJUST_KEYS: readonly (keyof Adjust)[]
 export declare function sanitizeAdjust(a: unknown): Adjust | null
 export declare function adjustPixels(data: Uint8Array | Uint8ClampedArray, channels: number, a: Partial<Adjust>): void

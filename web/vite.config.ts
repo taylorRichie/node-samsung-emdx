@@ -4,6 +4,9 @@ import path from 'path'
 
 export default defineConfig({
   plugins: [react()],
+  // Relative URLs throughout, so the app also works under a path, as in Home
+  // Assistant's sidebar (the server sets <base> to match)
+  base: './',
   resolve: {
     alias: {
       "@": path.resolve(__dirname, "./src"),

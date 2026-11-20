@@ -4,26 +4,27 @@
 
 @layer base {
   :root {
-    --background: 0 0% 3.9%;
-    --foreground: 0 0% 98%;
-    --card: 0 0% 6%;
-    --card-foreground: 0 0% 98%;
-    --secondary: 0 0% 12%;
-    --secondary-foreground: 0 0% 98%;
-    --muted: 0 0% 12%;
-    --muted-foreground: 0 0% 63.9%;
-    --accent: 0 0% 14.9%;
-    --accent-foreground: 0 0% 98%;
-    --destructive: 0 62.8% 50%;
-    --destructive-foreground: 0 0% 98%;
-    --border: 0 0% 14.9%;
-    --input: 0 0% 14.9%;
-    --radius: 0.5rem;
-    --primary: 0 0% 98%;
-    --primary-foreground: 0 0% 9%;
-    --ring: 0 0% 83.1%;
-    --popover: 0 0% 3.9%;
-    --popover-foreground: 0 0% 98%;
+    /* Warm graphite and paper white, like ink on the panel itself */
+    --background: 30 6% 7%;
+    --foreground: 40 22% 93%;
+    --card: 30 6% 10%;
+    --card-foreground: 40 22% 93%;
+    --secondary: 30 5% 15%;
+    --secondary-foreground: 40 22% 93%;
+    --muted: 30 5% 15%;
+    --muted-foreground: 36 8% 66%;
+    --accent: 30 5% 17%;
+    --accent-foreground: 40 22% 93%;
+    --destructive: 4 66% 52%;
+    --destructive-foreground: 40 22% 96%;
+    --border: 30 5% 18%;
+    --input: 30 5% 21%;
+    --radius: 0.625rem;
+    --primary: 40 22% 93%;
+    --primary-foreground: 30 8% 9%;
+    --ring: 40 22% 78%;
+    --popover: 30 6% 11%;
+    --popover-foreground: 40 22% 93%;
   }
 
   [data-theme="blue"] {
@@ -67,9 +68,64 @@
   }
 
   body {
-    @apply bg-background text-foreground;
+    @apply bg-background text-foreground antialiased;
     font-feature-settings: "rlig" 1, "calt" 1;
   }
+}
+
+@layer components {
+  /* Floating panels over the canvas */
+  .surface {
+    @apply rounded-2xl border border-border bg-card/85 backdrop-blur-xl;
+    box-shadow: 0 12px 32px -16px rgb(0 0 0 / 0.7), inset 0 1px 0 rgb(255 255 255 / 0.03);
+  }
+
+  .eyebrow {
+    @apply text-[11px] font-semibold uppercase tracking-[0.08em] text-muted-foreground;
+  }
+
+  /* Filled from --from to --to, so a -100..100 slider fills out from its center */
+  .range {
+    -webkit-appearance: none;
+    appearance: none;
+    display: block;
+    width: 100%;
+    height: 18px;
+    background: transparent;
+    cursor: pointer;
+    --track: linear-gradient(to right,
+      hsl(var(--input)) var(--from), hsl(var(--primary)) var(--from),
+      hsl(var(--primary)) var(--to), hsl(var(--input)) var(--to));
+  }
+  .range:focus { outline: none; }
+  .range:disabled { cursor: default; opacity: 0.5; }
+  .range::-webkit-slider-runnable-track { height: 3px; border-radius: 999px; background: var(--track); }
+  .range::-moz-range-track { height: 3px; border-radius: 999px; background: var(--track); }
+  .range::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    width: 14px;
+    height: 14px;
+    margin-top: -5.5px;
+    border-radius: 999px;
+    border: 2px solid hsl(var(--card));
+    background: hsl(var(--primary));
+    box-shadow: 0 0 0 1px hsl(var(--primary) / 0.35);
+    transition: transform 100ms;
+  }
+  .range::-moz-range-thumb {
+    width: 10px;
+    height: 10px;
+    border-radius: 999px;
+    border: 2px solid hsl(var(--card));
+    background: hsl(var(--primary));
+    box-shadow: 0 0 0 1px hsl(var(--primary) / 0.35);
+  }
+  .range:hover::-webkit-slider-thumb { transform: scale(1.12); }
+  .range:focus-visible::-webkit-slider-thumb { box-shadow: 0 0 0 3px hsl(var(--ring) / 0.45); }
+  .range:focus-visible::-moz-range-thumb { box-shadow: 0 0 0 3px hsl(var(--ring) / 0.45); }
+
+  /* Slim scrollbars inside panels */
+  .scroll-thin { scrollbar-width: thin; scrollbar-color: hsl(var(--input)) transparent; }
 }
 
 .reactEasyCrop_Container {

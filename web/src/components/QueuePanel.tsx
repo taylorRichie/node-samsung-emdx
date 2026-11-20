@@ -5,17 +5,20 @@ import {
 } from "lucide-react"
 
 import { Button } from "@/components/ui/button"
-import { Checkbox } from "@/components/ui/checkbox"
-import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
+import { Segmented } from "@/components/ui/segmented"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
+import { Switch } from "@/components/ui/switch"
 import { RailPanelShell } from "@/components/RightRail"
-import { LightboxEditor, displayAspect, type LightboxResult } from "@/components/LightboxEditor"
+import { ImageDesigner, type DesignResult } from "@/components/ImageDesigner"
+import { ScheduleEditor } from "@/components/ScheduleEditor"
+import { withWakeHint } from "@/lib/wakeHint"
+import { readSend, toastSend } from "@/lib/send"
 import type {
-  DisplayConfig, DisplayStatus, IntervalUnit, ProviderConfig, QueueData, QueueImage, Schedule, SleepMode,
+  DisplayConfig, DisplayStatus, ProfileId, ProviderConfig, QueueData, QueueImage, Schedule, SleepMode,
 } from "@/lib/types"
-import { displayState } from "@/lib/displayState"
-import { scheduleSentence, to24h } from "@/lib/schedule"
+import { displayAspect, displayState } from "@/lib/displayState"
+import { scheduleSentence } from "@/lib/schedule"
 
 const PAGE = 24
 /** Drag payload type set by GalleryPanel tiles */
@@ -49,17 +52,20 @@ interface QueuePanelProps {
   open: boolean
   display: DisplayConfig
   status: DisplayStatus | null
+  defaultProfile: ProfileId
   onDisplayUpdated: () => void
   /** Bumped when something external (e.g. the gallery) modifies the queue */
   refreshKey?: number
 }
 
-export function QueuePanel({ open, display, status, onDisplayUpdated, refreshKey }: QueuePanelProps) {
-  const api = `/api/displays/${display.id}`
+export function QueuePanel({ open, display, status, defaultProfile, onDisplayUpdated, refreshKey }: QueuePanelProps) {
+  const api = `api/displays/${display.id}`
 
   const [queue, setQueue] = useState<QueueData>({ images: [], currentIndex: 0 })
   const [mode, setMode] = useState<SleepMode>("manual")
-  const [schedule, setSchedule] = useState<Schedule>({ enabled: false, by: "time", hour: 8, minute: 0, repeat: "daily" })
+  const [schedule, setSchedule] = useState<Schedule>({
+    enabled: false, by: "times", times: ["08:00"], days: [0, 1, 2, 3, 4, 5, 6], intervalValue: 1, intervalUnit: "hours", between: null,
+  })
   const [providerConfig, setProviderConfig] = useState<ProviderConfig>({ sourceMode: "queue", activeProvider: "nasa-iotd", providers: [] })
   const [detailsOpen, setDetailsOpen] = useState(false)
   const [wakeTimes, setWakeTimes] = useState<number[]>([])
@@ -107,11 +113,17 @@ export function QueuePanel({ open, display, status, onDisplayUpdated, refreshKey
   const updateSchedule = async (patch: Partial<Schedule>) => {
     const next = { ...schedule, ...patch }
     setSchedule(next)
-    const res = await fetch(`${api}/schedule`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(next) }).catch(() => null)
-    if (res?.ok) {
-      const data = await res.json().catch(() => null) as { schedule?: Schedule } | null
-      if (data?.schedule) setSchedule(data.schedule)
-    }
+    const { enabled, by, times, days, intervalValue, intervalUnit, between } = next
+    const res = await fetch(`${api}/schedule`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ enabled, by, times, days, intervalValue, intervalUnit, between }),
+    }).catch(() => null)
+    const data = await res?.json().catch(() => null) as { schedule?: Schedule; error?: string } | null
+    if (res?.ok && data?.schedule) setSchedule(data.schedule)
+    else if (data?.error) toast.error(data.error)
+    // Captions follow the new times
+    fetch(`${api}/schedule/upcoming?count=${Math.max(queue.images.length, 10)}`).then(r => r.ok ? r.json() : null)
+      .then(u => { if (u) setWakeTimes(u.times ?? []) }).catch(() => {})
   }
 
   // "Queue enabled" = scheduled mode + an enabled schedule, toggled as one
@@ -134,11 +146,6 @@ export function QueuePanel({ open, display, status, onDisplayUpdated, refreshKey
 
   const providerName = providerConfig.providers.find(p => p.id === providerConfig.activeProvider)?.name ?? "the provider"
   const sourceLabel = providerConfig.sourceMode === "provider" ? `one from ${providerName}` : "the next image from its queue"
-
-  const segBtn = (active: boolean) =>
-    `flex-1 flex items-center justify-center gap-1.5 rounded-md px-2 py-1.5 text-xs font-medium transition-colors ${
-      active ? "bg-accent text-foreground" : "text-muted-foreground hover:text-foreground"
-    }`
 
   useEffect(() => {
     if (!open) return
@@ -214,14 +221,12 @@ export function QueuePanel({ open, display, status, onDisplayUpdated, refreshKey
   const handlePush = async (img: QueueImage) => {
     setPushingId(img.id)
     try {
-      const res = await fetch(`${api}/queue/${img.id}/push`, { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" })
-      const data = await res.json().catch(() => ({})) as { error?: string }
-      if (!res.ok) throw new Error(data.error || "Push failed")
-      toast.success("Image pushed to display")
+      const res = await withWakeHint(display.name, () =>
+        fetch(`${api}/queue/${img.id}/push`, { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" }))
+      toastSend(display.name, await readSend(res))
       fetchQueue(); onDisplayUpdated()
     } catch (err) {
-      toast.error(`Push failed: ${err instanceof Error ? err.message : "Unknown error"}${
-        deepSleepLikely ? " — the display is in deep sleep; press its power button first." : ""}`)
+      toast.error(`Push failed: ${err instanceof Error ? err.message : "Unknown error"}`)
     } finally { setPushingId(null) }
   }
 
@@ -230,21 +235,41 @@ export function QueuePanel({ open, display, status, onDisplayUpdated, refreshKey
     fetchQueue()
   }
 
-  // ─── Presentation override (lightbox editor) ─────────────────────────────
-  const handleEditApply = async (result: LightboxResult) => {
+  // ─── Image designer ──────────────────────────────────────────────────────
+  const saveDesign = async (img: QueueImage, result: DesignResult) => {
+    const res = await fetch(`${api}/queue/${img.id}/edit`, {
+      method: "PUT", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(result),
+    })
+    if (!res.ok) throw new Error("Couldn't save the design")
+  }
+
+  const handleDesignSave = async (result: DesignResult) => {
     if (!editImg) return
     setEditApplying(true)
     try {
-      const res = await fetch(`${api}/queue/${editImg.id}/edit`, {
-        method: "PUT", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(result),
-      })
-      if (!res.ok) throw new Error("Failed to save presentation")
-      toast.success("Presentation saved — applied when the image displays")
+      await saveDesign(editImg, result)
+      toast.success("Saved. It'll be used when this image goes to the display.")
       setEditImg(null)
       fetchQueue()
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : "Failed to save presentation")
+      toast.error(err instanceof Error ? err.message : "Couldn't save the design")
+    } finally { setEditApplying(false) }
+  }
+
+  const handleDesignSend = async (result: DesignResult) => {
+    if (!editImg) return
+    setEditApplying(true)
+    try {
+      await saveDesign(editImg, result)
+      const res = await withWakeHint(display.name, () =>
+        fetch(`${api}/queue/${editImg.id}/push`, { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" }))
+      toastSend(display.name, await readSend(res))
+      setEditImg(null)
+      fetchQueue(); onDisplayUpdated()
+    } catch (err) {
+      toast.error(`Couldn't send: ${err instanceof Error ? err.message : "Unknown error"}. The design was saved.`)
+      fetchQueue()
     } finally { setEditApplying(false) }
   }
 
@@ -268,84 +293,58 @@ export function QueuePanel({ open, display, status, onDisplayUpdated, refreshKey
   return (
     <RailPanelShell open={open}>
       {/* Queue details: enable toggle + collapsible schedule/source settings */}
-      <div className="px-3 py-2 border-b border-border shrink-0 space-y-2">
+      <div className="px-4 py-2.5 border-b border-border shrink-0 space-y-2">
         <div className="flex items-center justify-between">
           <button
-            className="flex items-center gap-1 text-xs font-semibold uppercase tracking-wider text-muted-foreground hover:text-foreground transition-colors"
+            aria-expanded={detailsOpen}
+            className="eyebrow flex items-center gap-1 transition-colors hover:text-foreground"
             onClick={() => setDetailsOpen(v => !v)}
           >
             {detailsOpen ? <ChevronDown className="h-3.5 w-3.5" /> : <ChevronRight className="h-3.5 w-3.5" />}
-            Queue details
+            Schedule
           </button>
           <label className="flex items-center gap-2 cursor-pointer">
-            <Checkbox checked={queueEnabled} onCheckedChange={v => setQueueEnabled(!!v)} />
-            <span className="text-xs">Queue enabled</span>
+            <span className="text-xs text-muted-foreground">{queueEnabled ? "On" : "Off"}</span>
+            <Switch aria-label="Run the schedule" checked={queueEnabled} onCheckedChange={setQueueEnabled} />
           </label>
         </div>
 
         {detailsOpen && (
           <div className="space-y-3 pb-1">
-            {/* By: interval / time */}
-            <div className="flex items-end gap-2">
-              <div className="space-y-1">
-                <Label className="text-xs text-muted-foreground">By</Label>
-                <Select value={schedule.by ?? "time"} onValueChange={v => updateSchedule({ by: v as "time" | "interval" })}>
-                  <SelectTrigger className="w-[104px] h-8 text-xs"><SelectValue /></SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="interval">Interval</SelectItem>
-                    <SelectItem value="time">Time</SelectItem>
-                  </SelectContent>
-                </Select>
+            <ScheduleEditor schedule={schedule} onChange={updateSchedule} />
+
+            {/* Whether anything can actually wake it */}
+            {queueEnabled && schedule.wakeMethod === "network" && (
+              <p className="text-[11px] leading-relaxed text-muted-foreground">
+                This app wakes it over the network at each time, since it uses network standby.
+              </p>
+            )}
+            {queueEnabled && schedule.wakeMethod === "timer" && (
+              <div className="flex items-start gap-2 rounded-lg border border-amber-500/30 bg-amber-500/10 px-2.5 py-2 text-[11px] leading-relaxed text-amber-500">
+                <TriangleAlert className="mt-px h-3.5 w-3.5 shrink-0" />
+                <span>
+                  {schedule.wakeTimer === "refused"
+                    ? "This display refused its wake timer, so it can't wake itself for these times. "
+                    : "In deep sleep it has to wake itself with its own timer, which firmware 1130.7 refuses. "}
+                  For reliable times, set its sleep mode to Network standby and add its MAC address in its settings, so this app can wake it.
+                  Until then each image waits and goes out when the display next wakes.
+                </span>
               </div>
-              {(schedule.by ?? "time") === "interval" ? (
-                <>
-                  <div className="space-y-1">
-                    <Label className="text-xs text-muted-foreground">Every</Label>
-                    <Input type="number" min={1} value={schedule.intervalValue ?? 1}
-                      onChange={e => updateSchedule({ intervalValue: Math.max(1, parseInt(e.target.value) || 1) })}
-                      className="w-16 h-8 text-xs" />
-                  </div>
-                  <Select value={schedule.intervalUnit ?? "days"} onValueChange={v => updateSchedule({ intervalUnit: v as IntervalUnit })}>
-                    <SelectTrigger className="flex-1 h-8 text-xs"><SelectValue /></SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="minutes">Minutes</SelectItem>
-                      <SelectItem value="hours">Hours</SelectItem>
-                      <SelectItem value="days">Days</SelectItem>
-                      <SelectItem value="weeks">Weeks</SelectItem>
-                    </SelectContent>
-                  </Select>
-                </>
-              ) : (
-                <>
-                  <div className="space-y-1">
-                    <Label className="text-xs text-muted-foreground">At</Label>
-                    <Input type="time" value={to24h(schedule.hour, schedule.minute)}
-                      onChange={e => { const [h, m] = e.target.value.split(":").map(Number); if (!isNaN(h) && !isNaN(m)) updateSchedule({ hour: h, minute: m }) }}
-                      className="w-[108px] h-8 text-xs" />
-                  </div>
-                  <Select value={schedule.repeat} onValueChange={v => updateSchedule({ repeat: v })}>
-                    <SelectTrigger className="flex-1 h-8 text-xs"><SelectValue /></SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="daily">Daily</SelectItem>
-                      <SelectItem value="weekdays">Weekdays</SelectItem>
-                      <SelectItem value="once">Once</SelectItem>
-                    </SelectContent>
-                  </Select>
-                </>
-              )}
-            </div>
+            )}
 
             {/* Source */}
             <div className="space-y-2">
               <Label className="text-xs text-muted-foreground">Source</Label>
-              <div className="flex items-center rounded-lg border border-border p-0.5 gap-0.5">
-                <button className={segBtn(providerConfig.sourceMode === "queue")} onClick={() => setSourceMode("queue")}>
-                  <ListOrdered className="h-3.5 w-3.5" /> Queue
-                </button>
-                <button className={segBtn(providerConfig.sourceMode === "provider")} onClick={() => setSourceMode("provider")}>
-                  <Rss className="h-3.5 w-3.5" /> Provider
-                </button>
-              </div>
+              <Segmented
+                stretch
+                label="Source"
+                value={providerConfig.sourceMode}
+                onChange={setSourceMode}
+                options={[
+                  { value: "queue", label: <><ListOrdered className="h-3.5 w-3.5" /> Queue</> },
+                  { value: "provider", label: <><Rss className="h-3.5 w-3.5" /> Provider</> },
+                ]}
+              />
               {providerConfig.sourceMode === "provider" && (
                 <Select value={providerConfig.activeProvider} onValueChange={setActiveProvider}>
                   <SelectTrigger className="w-full h-8 text-xs"><SelectValue /></SelectTrigger>
@@ -367,27 +366,22 @@ export function QueuePanel({ open, display, status, onDisplayUpdated, refreshKey
       </div>
 
       {/* Queue: add + count + view toggle */}
-      <div className="flex items-center justify-between px-3 py-2 border-b border-border shrink-0">
-        <span className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+      <div className="flex items-center gap-2 px-4 py-2 border-b border-border shrink-0">
+        <span className="eyebrow flex-1">
           Queue <span className="font-normal normal-case tracking-normal">· {queue.images.length} image{queue.images.length === 1 ? "" : "s"}</span>
         </span>
-        <Button variant="outline" size="sm" className="h-7 gap-1.5 text-xs" onClick={() => fileRef.current?.click()} disabled={uploading}>
+        <Button variant="outline" size="xs" className="gap-1.5" onClick={() => fileRef.current?.click()} disabled={uploading}>
           {uploading ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Plus className="h-3.5 w-3.5" />} Add
         </Button>
-        <div className="flex items-center rounded-lg border border-border p-0.5 gap-0.5">
-          <button
-            className={`flex h-6 w-6 items-center justify-center rounded-md transition-colors ${view === "list" ? "bg-accent text-foreground" : "text-muted-foreground hover:text-foreground"}`}
-            title="List view" onClick={() => setView("list")}
-          >
-            <List className="h-3.5 w-3.5" />
-          </button>
-          <button
-            className={`flex h-6 w-6 items-center justify-center rounded-md transition-colors ${view === "gallery" ? "bg-accent text-foreground" : "text-muted-foreground hover:text-foreground"}`}
-            title="Gallery view" onClick={() => setView("gallery")}
-          >
-            <LayoutGrid className="h-3.5 w-3.5" />
-          </button>
-        </div>
+        <Segmented
+          label="Queue view"
+          value={view}
+          onChange={setView}
+          options={[
+            { value: "list", label: <List className="h-3.5 w-3.5" />, title: "List view" },
+            { value: "gallery", label: <LayoutGrid className="h-3.5 w-3.5" />, title: "Gallery view" },
+          ]}
+        />
         <input ref={fileRef} type="file" accept="image/*" multiple className="hidden"
           onChange={e => { const fs = Array.from(e.target.files ?? []); if (fs.length) addFiles(fs); e.target.value = "" }} />
       </div>
@@ -396,7 +390,7 @@ export function QueuePanel({ open, display, status, onDisplayUpdated, refreshKey
       {deepSleepLikely && (
         <div className="flex items-start gap-2 mx-3 mt-2 rounded-lg border border-amber-500/30 bg-amber-500/10 px-2.5 py-2 text-[11px] text-amber-500 shrink-0">
           <TriangleAlert className="h-3.5 w-3.5 shrink-0 mt-px" />
-          <span>Display appears to be in deep sleep. To push now, press its power button first — otherwise images go out on the next scheduled wake.</span>
+          <span>The display seems to be in deep sleep. Images sent now wait and go out as soon as it wakes: press its power button to send them straight away.</span>
         </div>
       )}
 
@@ -447,7 +441,7 @@ export function QueuePanel({ open, display, status, onDisplayUpdated, refreshKey
                 <GripVertical className="h-4 w-4 text-muted-foreground/0 group-hover:text-muted-foreground/60 cursor-grab shrink-0 transition-colors" />
                 <img src={thumbUrl(img)} alt="" loading="lazy"
                   className="h-12 w-12 rounded-md object-cover shrink-0 border border-border cursor-pointer hover:ring-2 hover:ring-primary/50"
-                  title="Tune presentation (rotate, scale, crop)"
+                  title="Open in the image designer"
                   onClick={() => setEditImg(img)} />
                 <div className="flex-1 min-w-0 cursor-pointer" onClick={() => setEditImg(img)}>
                   <p className="text-xs font-medium">
@@ -482,7 +476,7 @@ export function QueuePanel({ open, display, status, onDisplayUpdated, refreshKey
                 className={`group relative aspect-square rounded-lg overflow-hidden border cursor-pointer ${
                   idx === 0 ? "border-primary/60 ring-1 ring-primary/40" : "border-border"
                 } ${dragIdx === idx ? "opacity-50" : ""}`}
-                title="Tune presentation (rotate, scale, crop)"
+                title="Open in the image designer"
                 onClick={() => setEditImg(img)}
               >
                 <img src={thumbUrl(img)} alt="" loading="lazy" draggable={false}
@@ -521,16 +515,20 @@ export function QueuePanel({ open, display, status, onDisplayUpdated, refreshKey
         )}
       </div>
 
-      {/* Presentation tuner for a queued image (stored, applied at push) */}
+      {/* Design for a queued image: stored, and used when it's sent */}
       {editImg && (
-        <LightboxEditor
-          open={!!editImg}
+        <ImageDesigner
           imageUrl={`${api}/queue/image/${editImg.id}`}
           aspect={displayAspect(display)}
-          title="Tune presentation — queued image"
+          title={display.name}
+          subtitle="Queued image"
           initial={editImg.edit ?? null}
+          defaultProfile={defaultProfile}
+          primaryLabel="Save"
+          onPrimary={handleDesignSave}
+          secondaryLabel="Save and send now"
+          onSecondary={handleDesignSend}
           applying={editApplying}
-          onApply={handleEditApply}
           onClose={() => setEditImg(null)}
         />
       )}

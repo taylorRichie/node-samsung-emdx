@@ -1,0 +1,254 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Samsung EMDX",
+        "description": "The address of the Samsung EMDX web app, as you open it in a browser.",
+        "data": {
+          "url": "URL"
+        },
+        "data_description": {
+          "url": "For example http://192.168.1.20:3001"
+        }
+      },
+      "reconfigure": {
+        "title": "Samsung EMDX",
+        "description": "Change the address of the Samsung EMDX web app.",
+        "data": {
+          "url": "URL"
+        },
+        "data_description": {
+          "url": "For example http://192.168.1.20:3001"
+        }
+      }
+    },
+    "error": {
+      "cannot_connect": "Couldn't reach the app at that address.",
+      "not_emdx": "Something answered at that address, but not the Samsung EMDX app.",
+      "invalid_url": "Enter an http:// or https:// address."
+    },
+    "abort": {
+      "already_configured": "This app is already set up.",
+      "reconfigure_successful": "The address was changed."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Samsung EMDX options",
+        "data": {
+          "scan_interval": "Polling interval"
+        },
+        "data_description": {
+          "scan_interval": "How often to read the app's state, in seconds. Changes the app reports live show up sooner."
+        }
+      }
+    }
+  },
+  "entity": {
+    "binary_sensor": {
+      "awake": {
+        "name": "Awake"
+      }
+    },
+    "button": {
+      "wake": {
+        "name": "Wake"
+      },
+      "sleep": {
+        "name": "Sleep"
+      },
+      "next_image": {
+        "name": "Next image"
+      },
+      "retry_delivery": {
+        "name": "Retry delivery"
+      },
+      "sync_clock": {
+        "name": "Sync clock"
+      }
+    },
+    "image": {
+      "current_image": {
+        "name": "Current image"
+      }
+    },
+    "sensor": {
+      "delivery": {
+        "name": "Delivery",
+        "state": {
+          "idle": "Idle",
+          "waiting": "Waiting",
+          "sending": "Sending",
+          "failed": "Failed"
+        },
+        "state_attributes": {
+          "label": {
+            "name": "Image"
+          },
+          "source": {
+            "name": "Source"
+          },
+          "error": {
+            "name": "Error"
+          },
+          "attempts": {
+            "name": "Attempts"
+          },
+          "next_attempt": {
+            "name": "Next attempt"
+          }
+        }
+      },
+      "last_image": {
+        "name": "Last image"
+      },
+      "next_wake": {
+        "name": "Next wake"
+      },
+      "queue": {
+        "name": "Queue"
+      },
+      "clock_drift": {
+        "name": "Clock drift"
+      }
+    },
+    "switch": {
+      "schedule": {
+        "name": "Schedule"
+      }
+    }
+  },
+  "selector": {
+    "fit": {
+      "options": {
+        "fit": "Fit (all of it, with bars)",
+        "fill": "Fill (cover, cropping)",
+        "stretch": "Stretch"
+      }
+    },
+    "profile": {
+      "options": {
+        "eink": "E-ink",
+        "vivid": "Vivid",
+        "bw": "Black and white",
+        "none": "Original"
+      }
+    }
+  },
+  "services": {
+    "send_image": {
+      "name": "Send image",
+      "description": "Sends an image to e-paper displays. A display that's asleep gets it as soon as it can be reached.",
+      "fields": {
+        "url": {
+          "name": "URL",
+          "description": "A link to the image, which the app downloads."
+        },
+        "path": {
+          "name": "File",
+          "description": "An image file Home Assistant can read, such as /config/www/snapshot.jpg."
+        },
+        "gallery": {
+          "name": "Library item",
+          "description": "An image from the app's library, as category/file.jpg."
+        },
+        "fit": {
+          "name": "Fit",
+          "description": "How the image is sized to the panel. Default: the app's setting."
+        },
+        "background": {
+          "name": "Background",
+          "description": "Bar color for fit, like #ffffff. Default: the app's setting."
+        },
+        "profile": {
+          "name": "Profile",
+          "description": "Tone adjustment. Default: the app's setting."
+        },
+        "wait": {
+          "name": "Wait",
+          "description": "Wait for the first attempt to send it (default). Off answers at once."
+        }
+      }
+    },
+    "span_image": {
+      "name": "Span image",
+      "description": "Spans one image across a group of displays, each getting its slice. Without an image, the group's last image is sent again.",
+      "fields": {
+        "group": {
+          "name": "Group",
+          "description": "The group's name or id, as in the app."
+        },
+        "url": {
+          "name": "URL",
+          "description": "A link to the image, which the app downloads."
+        },
+        "path": {
+          "name": "File",
+          "description": "An image file Home Assistant can read, such as /config/www/panorama.jpg."
+        },
+        "gallery": {
+          "name": "Library item",
+          "description": "An image from the app's library, as category/file.jpg."
+        },
+        "fit": {
+          "name": "Fit",
+          "description": "How the image is placed on the wall. Default: fill."
+        },
+        "background": {
+          "name": "Background",
+          "description": "Bar color for fit, like #ffffff."
+        },
+        "profile": {
+          "name": "Profile",
+          "description": "Tone adjustment. Default: the app's setting."
+        },
+        "wait": {
+          "name": "Wait",
+          "description": "Wait for the first attempt on each display (default). Off answers at once."
+        }
+      }
+    }
+  },
+  "exceptions": {
+    "update_failed": {
+      "message": "Couldn't read the Samsung EMDX app's state: {error}"
+    },
+    "api_error": {
+      "message": "{error}"
+    },
+    "cannot_connect": {
+      "message": "Couldn't reach the Samsung EMDX app: {error}"
+    },
+    "not_loaded": {
+      "message": "No Samsung EMDX app is set up and running."
+    },
+    "no_displays": {
+      "message": "Choose at least one Samsung EMDX display."
+    },
+    "not_a_display": {
+      "message": "{target} isn't a Samsung EMDX display."
+    },
+    "display_unavailable": {
+      "message": "{target} isn't in any Samsung EMDX app that's running now."
+    },
+    "no_image": {
+      "message": "Give an image: one of url, path or gallery."
+    },
+    "path_not_allowed": {
+      "message": "Home Assistant isn't allowed to read {path}. Use a file in /config/www or /media, or add its folder to allowlist_external_dirs."
+    },
+    "file_unreadable": {
+      "message": "Couldn't read {path}: {error}"
+    },
+    "send_failed": {
+      "message": "Couldn't send the image. {errors}"
+    },
+    "unknown_group": {
+      "message": "There's no group \"{group}\" in the Samsung EMDX app. Groups: {groups}."
+    },
+    "span_failed": {
+      "message": "Couldn't send the image to every display in {group}. {errors}"
+    }
+  }
+}

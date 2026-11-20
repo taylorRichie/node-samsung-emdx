@@ -3,14 +3,16 @@ import {
   Plus, Maximize, ZoomIn, ZoomOut, ImagePlus, ScanSearch, Lock, LockOpen, Trash2,
   AlignStartVertical, AlignCenterVertical, AlignEndVertical,
   AlignStartHorizontal, AlignCenterHorizontal, AlignEndHorizontal,
-  AlignHorizontalDistributeCenter, AlignVerticalDistributeCenter,
+  AlignHorizontalDistributeCenter, AlignVerticalDistributeCenter, GalleryHorizontal, Pencil,
 } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { DisplayTile, footprint } from "@/components/DisplayTile"
 import { DisplayHUD, type HudMode, type FtSub } from "@/components/DisplayHUD"
 import { DisplayListPanel } from "@/components/DisplayListPanel"
+import { displayOrientation, type Orientation } from "@/lib/displayState"
 import { rectToQuadMatrix, inferQuad, quadBounds, translateQuad } from "@/lib/perspective"
-import type { DisplayConfig, DisplayStatus, Scene, Quad } from "@/lib/types"
+import { canvasRect, sameMembers } from "@/lib/span"
+import type { Delivery, DisplayConfig, DisplayGroup, DisplayStatus, Scene, Quad } from "@/lib/types"
 
 interface DisplayCanvasProps {
   displays: DisplayConfig[]
@@ -19,10 +21,14 @@ interface DisplayCanvasProps {
   lastImageTimestamps: Record<string, number>
   /** Display whose settings modal is open — rendered flat (perspective released) */
   settingsOpenId: string | null
+  /** Open the display's panel */
+  onOpenDisplay: (displayId: string) => void
   onOpenSettings: (displayId: string) => void
   /** Reports the single-selected display (null when none / multi) */
   onActiveDisplayChange?: (displayId: string | null) => void
   onPatchDisplay: (displayId: string, patch: Partial<DisplayConfig>) => void
+  /** Portrait/landscape is shared with the display, so the parent applies it */
+  onOrientationChange: (display: DisplayConfig, orientation: Orientation) => void
   onPatchScene: (sceneId: string, patch: Partial<Scene>) => void
   onSceneUpload: (file: File, canvasX: number, canvasY: number) => void
   onSceneDelete: (sceneId: string) => void
@@ -30,6 +36,13 @@ interface DisplayCanvasProps {
   /** Show/hide the left display list panel (toggled from the app header) */
   listOpen: boolean
   onReorderDisplays: (ids: string[], commit: boolean) => void
+  /** Saved groups of displays that show one image across them */
+  groups: DisplayGroup[]
+  /** The image waiting to reach each display */
+  deliveries: Record<string, Delivery | null>
+  /** Span an image across these displays: a new one, or edit the last one */
+  onSpanImage: (displayIds: string[], mode: "new" | "edit") => void
+  onDeleteGroup: (groupId: string) => void
 }
 
 const MIN_ZOOM = 0.15
@@ -48,7 +61,8 @@ type PanDrag = { startX: number; startY: number; origX: number; origY: number }
 
 export function DisplayCanvas({
   displays, scenes, statuses, lastImageTimestamps, settingsOpenId,
-  onOpenSettings, onActiveDisplayChange, onPatchDisplay, onPatchScene, onSceneUpload, onSceneDelete, onAddDisplay, listOpen, onReorderDisplays,
+  onOpenDisplay, onOpenSettings, onActiveDisplayChange, onPatchDisplay, onOrientationChange, onPatchScene, onSceneUpload, onSceneDelete, onAddDisplay, listOpen, onReorderDisplays,
+  groups, deliveries, onSpanImage, onDeleteGroup,
 }: DisplayCanvasProps) {
   const containerRef = useRef<HTMLDivElement>(null)
   const [view, setView] = useState<View>({ x: 0, y: 0, zoom: 1 })
@@ -243,7 +257,7 @@ export function DisplayCanvas({
   const inferPerspective = useCallback((displayId: string, scene: Scene, cx: number, cy: number, fw: number, fh: number, opts?: { fallbackQuad?: Quad, immediate?: Partial<DisplayConfig>, prevPlane?: DisplayConfig["plane"] }) => {
     const fallback = opts?.fallbackQuad ?? inferQuad(cx, cy, fw, fh, scene)
     onPatchDisplay(displayId, { sceneId: scene.id, quad: fallback, ...opts?.immediate })
-    fetch(`/api/scenes/${scene.id}/infer`, {
+    fetch(`api/scenes/${scene.id}/infer`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ x: cx - scene.canvasX, y: cy - scene.canvasY, w: fw, h: fh, prevPlane: opts?.prevPlane ?? undefined }),
@@ -261,6 +275,27 @@ export function DisplayCanvas({
       })
       .catch(() => {})
   }, [onPatchDisplay])
+
+  // Orientation can change from the HUD, Device settings or the display itself.
+  // Wherever it came from, a display on a scene needs its quad refit to the new
+  // footprint; re-inferring at the same spot respects the depth map.
+  const lastOrientation = useRef(new Map<string, Orientation>())
+  useEffect(() => {
+    for (const d of displays) {
+      const orientation = displayOrientation(d)
+      const previous = lastOrientation.current.get(d.id)
+      lastOrientation.current.set(d.id, orientation)
+      const scene = scenes.find(s => s.id === d.sceneId)
+      if (!previous || previous === orientation || !scene || !d.quad) continue
+      const b = quadBounds(d.quad)
+      const landscape = orientation === "landscape"
+      inferPerspective(d.id, scene,
+        scene.canvasX + (b.minX + b.maxX) / 2,
+        scene.canvasY + (b.minY + b.maxY) / 2,
+        landscape ? d.canvasHeight : d.canvasWidth,
+        landscape ? d.canvasWidth : d.canvasHeight)
+    }
+  }, [displays, scenes, inferPerspective])
 
   // ─── Drag move / end ─────────────────────────────────────────────────────
   const handleMouseMove = useCallback((e: React.MouseEvent) => {
@@ -475,9 +510,14 @@ export function DisplayCanvas({
   const handleTileClick = useCallback((e: React.MouseEvent, displayId: string) => {
     e.stopPropagation()
     if (draggedRef.current) { draggedRef.current = false; return }
+    // Shift- or ⌘-click adds a display to the selection, or takes it out
+    if (e.shiftKey || e.metaKey) {
+      setSelDisplayIds(prev => prev.includes(displayId) ? prev.filter(id => id !== displayId) : [...prev, displayId])
+      return
+    }
     setSelectedId(displayId); setSelectedSceneId(null)
-    if (e.detail >= 2) onOpenSettings(displayId)
-  }, [onOpenSettings, setSelectedId, setSelectedSceneId])
+    if (e.detail >= 2) onOpenDisplay(displayId)
+  }, [onOpenDisplay, setSelectedId, setSelectedSceneId])
 
   // ─── Keyboard: node-pair angle adjust, display nudge, escape ─────────────
   useEffect(() => {
@@ -651,6 +691,21 @@ export function DisplayCanvas({
     zoomToBounds(d.canvasX - mx, d.canvasY - my, f.w + mx * 2, f.h + my * 2)
   }, [displays, sceneById, setSelectedId, zoomToScene, zoomToBounds])
 
+  // Select a group's displays and frame them, with room around for the toolbar
+  const selectGroup = useCallback((groupId: string) => {
+    const g = groups.find(x => x.id === groupId)
+    if (!g) return
+    const members = displays.filter(d => g.displayIds.includes(d.id))
+    if (!members.length) return
+    setSelDisplayIds(members.map(d => d.id))
+    setSelSceneIds([])
+    const rects = members.map(d => canvasRect(d, sceneById))
+    const minX = Math.min(...rects.map(r => r.x)), minY = Math.min(...rects.map(r => r.y))
+    const maxX = Math.max(...rects.map(r => r.x + r.w)), maxY = Math.max(...rects.map(r => r.y + r.h))
+    const mx = (maxX - minX) * 0.25, my = (maxY - minY) * 0.35
+    zoomToBounds(minX - mx, minY - my, maxX - minX + mx * 2, maxY - minY + my * 2)
+  }, [groups, displays, sceneById, zoomToBounds])
+
   // ─── Selection bounds, align & distribute (multi-selection) ─────────────
   const selectionBounds = useCallback(() => {
     const rects: { x: number; y: number; w: number; h: number }[] = []
@@ -820,11 +875,12 @@ export function DisplayCanvas({
           <DisplayTile
             display={display}
             status={statuses[display.id] ?? null}
-            lastImageUrl={display.host ? `/api/displays/${display.id}/last-image?t=${ts}` : null}
+            lastImageUrl={display.host ? `api/displays/${display.id}/last-image?t=${ts}` : null}
             selected={isSelected}
             perspective
             width={f.w}
             height={f.h}
+            delivery={deliveries[display.id] ?? null}
           />
         </div>
 
@@ -883,10 +939,11 @@ export function DisplayCanvas({
           <DisplayTile
             display={display}
             status={statuses[display.id] ?? null}
-            lastImageUrl={display.host ? `/api/displays/${display.id}/last-image?t=${ts}` : null}
+            lastImageUrl={display.host ? `api/displays/${display.id}/last-image?t=${ts}` : null}
             selected={isSelected}
             width={f.w}
             height={f.h}
+            delivery={deliveries[display.id] ?? null}
           />
         </div>
 
@@ -957,7 +1014,7 @@ export function DisplayCanvas({
               onMouseDown={e => handleSceneMouseDown(e, scene)}
             >
               <img
-                src={`/api/scenes/${scene.id}/image`}
+                src={`api/scenes/${scene.id}/image`}
                 alt="Environment"
                 draggable={false}
                 className="w-full h-full object-fill rounded-md shadow-2xl select-none"
@@ -993,7 +1050,7 @@ export function DisplayCanvas({
               onMouseDown={e => e.stopPropagation()}
               onClick={e => e.stopPropagation()}
             >
-              <div className="flex items-center gap-0.5 rounded-lg border border-border bg-background/90 backdrop-blur-md shadow-xl px-1 py-1">
+              <div className="flex items-center gap-0.5 surface rounded-xl px-1 py-1">
                 {sceneDeleteConfirm === sc.id ? (
                   <>
                     <span className="text-xs px-1.5 whitespace-nowrap">Remove this image from the canvas?</span>
@@ -1076,6 +1133,10 @@ export function DisplayCanvas({
           if (!b) return null
           const canDistribute = alignItems().length >= 3
           const btn = "flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground hover:text-foreground hover:bg-accent transition-colors"
+          // Two or more displays can show one image across them
+          const spanIds = displays.filter(d => selDisplayIds.includes(d.id)).map(d => d.id)
+          const canSpan = spanIds.length >= 2
+          const spanGroup = canSpan ? groups.find(g => sameMembers(g.displayIds, spanIds)) : undefined
           return (
             <div
               className="absolute z-[60]"
@@ -1088,7 +1149,25 @@ export function DisplayCanvas({
               onMouseDown={e => e.stopPropagation()}
               onClick={e => e.stopPropagation()}
             >
-              <div className="flex items-center gap-0.5 rounded-lg border border-border bg-background/90 backdrop-blur-md shadow-xl px-1 py-1">
+              <div className="flex items-center gap-0.5 surface rounded-xl px-1 py-1">
+                {canSpan && (
+                  <>
+                    {spanGroup && <span className="max-w-[160px] truncate px-1.5 text-xs font-medium">{spanGroup.name}</span>}
+                    <button
+                      className="flex h-7 items-center gap-1.5 whitespace-nowrap rounded-md bg-primary px-2 text-xs font-medium text-primary-foreground transition-colors hover:bg-primary/90"
+                      title={`Show one image across these ${spanIds.length} displays`}
+                      onClick={() => onSpanImage(spanIds, "new")}
+                    >
+                      <GalleryHorizontal className="h-3.5 w-3.5" /> Span image
+                    </button>
+                    {spanGroup?.span && (
+                      <button className={btn} title="Edit the image spanned across these displays" onClick={() => onSpanImage(spanIds, "edit")}>
+                        <Pencil className="h-4 w-4" />
+                      </button>
+                    )}
+                    <div className="w-px h-4 bg-border mx-0.5" />
+                  </>
+                )}
                 <button className={btn} title="Align left" onClick={() => alignSelection("left")}><AlignStartVertical className="h-4 w-4" /></button>
                 <button className={btn} title="Align horizontal center" onClick={() => alignSelection("centerH")}><AlignCenterVertical className="h-4 w-4" /></button>
                 <button className={btn} title="Align right" onClick={() => alignSelection("right")}><AlignEndVertical className="h-4 w-4" /></button>
@@ -1127,24 +1206,8 @@ export function DisplayCanvas({
             onMode={m => { setMode(m); if (m !== "free") setNodeSel(null) }}
             ftSub={ftSub}
             onFtSub={setFtSub}
-            orientation={((selected.rotation ?? 0) % 180 + 180) % 180 === 90 ? "landscape" : "portrait"}
-            onOrientation={o => {
-              const rot = o === "landscape" ? 90 : 0
-              if (rot === (((selected.rotation ?? 0) % 180 + 180) % 180)) return
-              const fw = o === "landscape" ? selected.canvasHeight : selected.canvasWidth
-              const fh = o === "landscape" ? selected.canvasWidth : selected.canvasHeight
-              if (selectedOnScene && selectedScene && selectedQuad) {
-                // Re-infer at the same spot with the new frame footprint so the
-                // orientation switch respects the depth map
-                const b = quadBounds(selectedQuad)
-                inferPerspective(selected.id, selectedScene,
-                  selectedScene.canvasX + (b.minX + b.maxX) / 2,
-                  selectedScene.canvasY + (b.minY + b.maxY) / 2,
-                  fw, fh, { immediate: { rotation: rot } })
-              } else {
-                onPatchDisplay(selected.id, { rotation: rot })
-              }
-            }}
+            orientation={displayOrientation(selected)}
+            onOrientation={o => { if (o !== displayOrientation(selected)) onOrientationChange(selected, o) }}
             onSettings={() => onOpenSettings(selected.id)}
           />
         )}
@@ -1157,8 +1220,13 @@ export function DisplayCanvas({
           statuses={statuses}
           lastImageTimestamps={lastImageTimestamps}
           selectedId={selectedId}
+          groups={groups}
+          deliveries={deliveries}
+          activeGroupId={selDisplayIds.length >= 2 ? groups.find(g => sameMembers(g.displayIds, selDisplayIds))?.id ?? null : null}
+          onSelectGroup={selectGroup}
+          onDeleteGroup={onDeleteGroup}
           onGoto={gotoDisplay}
-          onSettings={id => { setSelectedId(id); onOpenSettings(id) }}
+          onSettings={id => { setSelectedId(id); onOpenDisplay(id) }}
           onAdd={onAddDisplay}
           onReorder={onReorderDisplays}
         />
@@ -1177,15 +1245,16 @@ export function DisplayCanvas({
       {/* Empty state */}
       {displays.length === 0 && scenes.length === 0 && (
         <div className="absolute inset-0 flex flex-col items-center justify-center text-muted-foreground pointer-events-none">
-          <p className="text-sm mb-3">No displays configured</p>
-          <Button variant="outline" className="gap-2 pointer-events-auto" onClick={onAddDisplay}>
-            <Plus className="h-4 w-4" /> Add Your First Display
+          <p className="text-sm font-medium text-foreground">No displays yet</p>
+          <p className="mt-1 mb-4 text-xs">Add one to start sending it images.</p>
+          <Button className="gap-2 pointer-events-auto" onClick={onAddDisplay}>
+            <Plus className="h-4 w-4" /> Add a display
           </Button>
         </div>
       )}
 
       {/* Zoom / fit controls */}
-      <div className="absolute bottom-4 right-4 flex items-center gap-1 rounded-xl border border-border bg-background/70 backdrop-blur-md px-1.5 py-1 shadow-lg">
+      <div className="surface absolute bottom-3 left-3 flex items-center gap-1 px-1.5 py-1 md:bottom-4 md:left-4">
         <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => zoomBy(1 / 1.2)} title="Zoom out">
           <ZoomOut className="h-4 w-4" />
         </Button>
@@ -1206,8 +1275,8 @@ export function DisplayCanvas({
       </div>
 
       {/* Hint */}
-      <p className="absolute bottom-4 left-4 text-[11px] text-muted-foreground/60 pointer-events-none">
-        Click to select · drag to multi-select · scroll to pan, pinch to zoom · double-click for settings · drop a JPG for an environment
+      <p className="pointer-events-none absolute bottom-6 left-[220px] hidden text-[11px] text-muted-foreground/60 lg:block">
+        Click to select · shift-click or drag a box to select several · scroll to pan · pinch to zoom · drop a photo of your room to place displays in it
       </p>
     </div>
   )

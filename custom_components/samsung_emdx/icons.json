@@ -1,0 +1,69 @@
+{
+  "entity": {
+    "binary_sensor": {
+      "awake": {
+        "default": "mdi:sleep",
+        "state": {
+          "on": "mdi:monitor-shimmer"
+        }
+      }
+    },
+    "button": {
+      "wake": {
+        "default": "mdi:power"
+      },
+      "sleep": {
+        "default": "mdi:power-sleep"
+      },
+      "next_image": {
+        "default": "mdi:skip-next"
+      },
+      "retry_delivery": {
+        "default": "mdi:send-clock"
+      },
+      "sync_clock": {
+        "default": "mdi:clock-check-outline"
+      }
+    },
+    "image": {
+      "current_image": {
+        "default": "mdi:image-frame"
+      }
+    },
+    "sensor": {
+      "delivery": {
+        "default": "mdi:email-check-outline",
+        "state": {
+          "waiting": "mdi:email-fast-outline",
+          "sending": "mdi:email-arrow-right-outline",
+          "failed": "mdi:email-alert-outline"
+        }
+      },
+      "last_image": {
+        "default": "mdi:image-check"
+      },
+      "next_wake": {
+        "default": "mdi:alarm"
+      },
+      "queue": {
+        "default": "mdi:image-multiple"
+      },
+      "clock_drift": {
+        "default": "mdi:clock-alert-outline"
+      }
+    },
+    "switch": {
+      "schedule": {
+        "default": "mdi:calendar-clock"
+      }
+    }
+  },
+  "services": {
+    "send_image": {
+      "service": "mdi:image-move"
+    },
+    "span_image": {
+      "service": "mdi:view-column"
+    }
+  }
+}

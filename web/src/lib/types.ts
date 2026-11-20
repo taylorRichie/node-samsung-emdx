@@ -1,6 +1,6 @@
-import type { Adjust } from "../../eink.mjs"
+import type { Adjust, ProfileId } from "../../eink.mjs"
 
-export type { Adjust }
+export type { Adjust, ProfileId }
 
 export interface DisplayConfig {
   id: string
@@ -48,8 +48,18 @@ export interface AppSettings {
   /** null when it can't be known, such as inside Docker Desktop */
   detectedAddress: string | null
   timeZone: string | null
+  /** Look given to images that don't have one of their own */
+  defaultProfile: ProfileId
+  /** How an image without a layout of its own is sized to the panel */
+  imageFit: ImageFit
+  /** Bars around a fitted image */
+  imageBackground: string
+  /** Set a display's clock to this app's time when it's out */
+  syncClocks: boolean
   port: number
 }
+
+export type ImageFit = "fit" | "fill" | "stretch"
 
 export const WALLPAPER_COLORS =["white", "black", "red", "green", "blue", "yellow"] as const
 
@@ -93,21 +103,58 @@ export interface DisplayStatus {
   serialNumber?: string | null
   softwareVersion?: string | null
   sleepTimer: { remainingMs: number; minutes: number; sleepAt: number } | null
+  clock?: DisplayClock | null
+}
+
+/** What time the display thinks it is */
+export interface DisplayClock {
+  /** Its local time, to the minute ("2026-11-19T08:01"), or null if unreadable */
+  time: string | null
+  /** Seconds ahead of this app's clock; negative when behind */
+  drift: number | null
+  /** Set when the app just put it right: how far out it was */
+  syncedFrom?: number | null
+  checkedAt: number
+  serverTime?: string
+  timeZone?: string
+  /** Asleep: the last reading */
+  cached?: boolean
+}
+
+/** An image waiting to reach a display */
+export interface Delivery {
+  id: string
+  label: string | null
+  source: "push" | "edit" | "queue" | "schedule" | "span" | "feed"
+  /** pending: waiting for its next try; failed: stopped until a setting is fixed or it's retried */
+  state: "pending" | "sending" | "failed"
+  attempts: number
+  createdAt: number
+  lastAttemptAt: number | null
+  nextAttemptAt: number | null
+  error: string | null
 }
 
 export type IntervalUnit = "minutes" | "hours" | "days" | "weeks"
 
 export interface Schedule {
   enabled: boolean
-  /** "time" wakes at a fixed time of day; "interval" wakes every N units */
-  by?: "time" | "interval"
-  hour: number
-  minute: number
-  repeat: string
-  intervalValue?: number
-  intervalUnit?: IntervalUnit
-  /** Next interval wake (epoch ms), managed by the server */
+  /** "times" wakes at set times of day; "interval" every so often */
+  by: "times" | "interval"
+  /** "HH:MM", this app's local time */
+  times: string[]
+  /** Days it runs on, 0 = Sunday */
+  days: number[]
+  intervalValue: number
+  intervalUnit: IntervalUnit
+  /** An interval only between these times each day; null counts from the last wake */
+  between: { from: string; to: string } | null
+  /** Next wake (epoch ms), managed by the server */
   nextWakeAt?: number | null
+  /** Whether the display took its own wake timer when last set */
+  wakeTimer?: "set" | "refused" | null
+  /** How it's woken: over the network (standby + MAC), or by its own timer */
+  wakeMethod?: "network" | "timer"
 }
 
 /** Presentation override: how a queued image should be shown, not what it is */
@@ -131,7 +178,7 @@ export interface QueueEdit {
   radius?: number
   /** Transform mode: border drawn around the placed image */
   border?: { color: string; width: number } | null
-  /** Tone/color adjustment for e-paper, applied to the art only */
+  /** Tone/color adjustment for e-paper, applied to the art only. null uses the default profile. */
   adjust?: Adjust | null
 }
 
@@ -141,6 +188,8 @@ export interface GalleryItem {
   category: string
   file: string
   title: string
+  /** Added in the app, so it can be deleted again */
+  uploaded?: boolean
 }
 
 export interface QueueImage {
@@ -180,3 +229,42 @@ export interface ProviderPreview {
 }
 
 export type SleepMode = "manual" | "scheduled"
+
+/** How much picture hides between neighbouring screens, in millimetres */
+export interface SpanGap {
+  /** Each display's frame, from the edge of the picture to the outside edge */
+  bezelMm: number
+  /** Space between displays side by side */
+  spaceXMm: number
+  /** Space between rows */
+  spaceYMm: number
+}
+
+/** One screen's place on a wall, in panel pixels */
+export interface WallScreen { id: string; x: number; y: number; w: number; h: number }
+
+/** A group's displays as one big canvas, frames and gaps included */
+export interface WallLayout {
+  width: number
+  height: number
+  screens: WallScreen[]
+}
+
+/** Displays hung together, showing one image spanned across all of them */
+export interface DisplayGroup {
+  id: string
+  name: string
+  displayIds: string[]
+  gap: SpanGap
+  /** The last image sent across the group */
+  span: { edit: QueueEdit; layout: WallLayout; updatedAt: string } | null
+}
+
+export interface SpanResult {
+  displayId: string
+  name: string
+  ok: boolean
+  /** delivered, queued (goes out when it can be reached) or failed */
+  state: "delivered" | "queued" | "failed" | "replaced"
+  error?: string
+}

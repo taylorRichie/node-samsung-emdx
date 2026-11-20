@@ -1,48 +1,42 @@
 import { useState, useCallback, useEffect, useRef } from "react"
 import { toast } from "sonner"
 import {
-  ArrowUp, BatteryCharging, BatteryMedium, Check, Crosshair, Info, Loader2, Lock, LockOpen,
-  Monitor, Moon, Power, PowerOff, RefreshCw, Trash2, Upload, Wifi, WifiOff, X,
+  BatteryCharging, BatteryMedium, Clock3, Hourglass, ImagePlus, Loader2, Monitor, Moon, Pencil, Power, PowerOff,
+  RectangleHorizontal, RectangleVertical, RefreshCw, Settings, TriangleAlert, Wifi, WifiOff,
 } from "lucide-react"
 
 import { Button } from "@/components/ui/button"
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog"
 import { Input } from "@/components/ui/input"
-import { Label } from "@/components/ui/label"
+import { Segmented } from "@/components/ui/segmented"
 import { RailPanelShell } from "@/components/RightRail"
-import { DeviceSettingsSection } from "@/components/DeviceSettingsSection"
-import { LightboxEditor, displayAspect, type LightboxResult } from "@/components/LightboxEditor"
-import type {
-  DisplayConfig, DisplayStatus, SleepMode,
-} from "@/lib/types"
-
-const SectionLabel = ({ children }: { children: React.ReactNode }) => (
-  <Label className="text-xs font-semibold uppercase tracking-wider text-muted-foreground block">{children}</Label>
-)
-const Divider = () => <div className="h-px bg-border" />
+import { ImageDesigner, type DesignResult } from "@/components/ImageDesigner"
+import { withWakeHint } from "@/lib/wakeHint"
+import { readSend, toastSend, fromNow, driftText } from "@/lib/send"
+import { displayAspect, displayOrientation, type Orientation } from "@/lib/displayState"
+import type { Delivery, DisplayClock, DisplayConfig, DisplayStatus, ProfileId, SleepMode } from "@/lib/types"
 
 interface PropertiesPanelProps {
   open: boolean
   display: DisplayConfig
   status: DisplayStatus | null
+  /** The image waiting to reach it, if any */
+  delivery: Delivery | null
   lastImageTs: number
+  defaultProfile: ProfileId
   onPatchDisplay: (displayId: string, patch: Partial<DisplayConfig>) => void
+  onOrientationChange: (display: DisplayConfig, orientation: Orientation) => void
   onDisplayUpdated: () => void
-  onDeleted: () => void
+  onOpenSettings: () => void
 }
 
+/** What's on the display now and the things you do with it day to day */
 export function PropertiesPanel({
-  open, display, status: statusProp, lastImageTs,
-  onPatchDisplay, onDisplayUpdated, onDeleted,
+  open, display, status: statusProp, delivery, lastImageTs, defaultProfile,
+  onPatchDisplay, onOrientationChange, onDisplayUpdated, onOpenSettings,
 }: PropertiesPanelProps) {
-  const api = `/api/displays/${display.id}`
+  const api = `api/displays/${display.id}`
 
   const [name, setName] = useState(display.name)
-  const [host, setHost] = useState(display.host)
-  const [pin, setPin] = useState(display.pin)
-  const [mac, setMac] = useState(display.mac)
-  const [sleepAfter, setSleepAfter] = useState(display.sleepAfter)
-
   const [status, setStatus] = useState<DisplayStatus | null>(statusProp)
   const [statusLoading, setStatusLoading] = useState(false)
   const [mode, setModeState] = useState<SleepMode>("manual")
@@ -50,46 +44,74 @@ export function PropertiesPanel({
   const [waking, setWaking] = useState(false)
   const [sleeping, setSleeping] = useState(false)
   const [forceSleeping, setForceSleeping] = useState(false)
-  const [pushing, setPushing] = useState(false)
-  const [removing, setRemoving] = useState(false)
-  const [removeOpen, setRemoveOpen] = useState(false)
-  const [editorOpen, setEditorOpen] = useState(false)
-  const [editorApplying, setEditorApplying] = useState(false)
-  const [editorSrc, setEditorSrc] = useState<string | null>(null)
-  const [editorInitial, setEditorInitial] = useState<LightboxResult | null>(null)
-  const [calib, setCalib] = useState<"idle" | "sending" | "awaiting" | "finishing">("idle")
-  const [calibSel, setCalibSel] = useState<number | null>(null)
-  const [calibInfo, setCalibInfo] = useState(false)
+  // A picked file isn't on the server yet, so it goes up with the design
+  const [designer, setDesigner] = useState<{ src: string; initial: DesignResult | null; file: File | null } | null>(null)
+  const [applying, setApplying] = useState(false)
   const [imgError, setImgError] = useState(false)
   const [fileOver, setFileOver] = useState(false)
-  const [history, setHistory] = useState<{ id: string; ts: number }[]>([])
+  const [clock, setClock] = useState<DisplayClock | null>(null)
+  const [syncing, setSyncing] = useState(false)
+  const [deliveryBusy, setDeliveryBusy] = useState<"retry" | "cancel" | null>(null)
   const fileRef = useRef<HTMLInputElement>(null)
-
-  const upLocked = !!display.upLocked
 
   // ─── Fetch on open / display change ──────────────────────────────────────
   useEffect(() => {
     if (!open) return
-    setName(display.name); setHost(display.host); setPin(display.pin)
-    setMac(display.mac); setSleepAfter(display.sleepAfter)
-    setStatus(statusProp); setImgError(false); setCalib("idle")
+    setName(display.name)
+    setStatus(statusProp); setImgError(false)
     fetch(`${api}/mode`).then(r => r.ok ? r.json() : null).then(m => {
       if (m) setModeState(m.mode === "scheduled" ? "scheduled" : "manual")
     }).catch(() => {})
   }, [open, display.id]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  // The name can also change in Settings
+  useEffect(() => { setName(display.name) }, [display.name])
 
   useEffect(() => { setImgError(false) }, [lastImageTs, display.id])
 
   // Track live server-pushed status updates while the panel is open
   useEffect(() => { setStatus(statusProp) }, [statusProp])
 
-  // History follows the current image: refetch whenever a push lands
+  // The display's clock: read now if it's awake, its last reading otherwise.
+  // Every send checks it too, so it follows new images.
   useEffect(() => {
-    if (!open) return
-    fetch(`${api}/history`).then(r => r.ok ? r.json() : null)
-      .then(d => { if (d?.images) setHistory(d.images) })
+    if (!open || !display.host || !display.pin) return
+    let cancelled = false
+    fetch(`${api}/clock`).then(r => r.ok ? r.json() : null)
+      .then(c => { if (!cancelled) setClock(c) })
       .catch(() => {})
-  }, [open, display.id, lastImageTs]) // eslint-disable-line react-hooks/exhaustive-deps
+    return () => { cancelled = true }
+  }, [open, display.id, display.host, display.pin, lastImageTs]) // eslint-disable-line react-hooks/exhaustive-deps
+  const shownClock = statusProp?.clock ?? clock
+
+  const handleSyncClock = async () => {
+    setSyncing(true)
+    try {
+      const res = await withWakeHint(display.name, () => fetch(`${api}/clock/sync`, { method: "POST" }))
+      const data = await res.json().catch(() => ({})) as DisplayClock & { error?: string }
+      if (!res.ok) throw new Error(data.error || "Couldn't sync")
+      setClock(data)
+      toast.success(`${display.name}'s clock is set to this app's time`)
+    } catch (err) {
+      toast.error(`Couldn't sync the clock: ${err instanceof Error ? err.message : "Unknown error"}`)
+    } finally { setSyncing(false) }
+  }
+
+  // ─── The image waiting to reach it ───────────────────────────────────────
+  const retryDelivery = async () => {
+    setDeliveryBusy("retry")
+    try {
+      const res = await withWakeHint(display.name, () => fetch(`${api}/delivery/retry`, { method: "POST" }))
+      toastSend(display.name, await readSend(res))
+    } catch (err) {
+      toast.error(`Couldn't send: ${err instanceof Error ? err.message : "Unknown error"}`)
+    } finally { setDeliveryBusy(null) }
+  }
+  const cancelDelivery = async () => {
+    setDeliveryBusy("cancel")
+    await fetch(`${api}/delivery`, { method: "DELETE" }).catch(() => {})
+    setDeliveryBusy(null)
+  }
 
   const fetchStatus = useCallback(async () => {
     if (!display.host || !display.pin) return
@@ -99,17 +121,15 @@ export function PropertiesPanel({
     finally { setStatusLoading(false) }
   }, [api, display.host, display.pin])
 
-  // ─── Connection field save (on blur) ─────────────────────────────────────
-  const saveField = (patch: Partial<DisplayConfig>) => onPatchDisplay(display.id, patch)
-
   // ─── Power controls ──────────────────────────────────────────────────────
   const handleWake = async () => {
     setWaking(true)
     try {
-      const res = await fetch(`${api}/wake`, { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" })
-      const data = await res.json().catch(() => ({})) as { method?: string; error?: string }
+      const res = await withWakeHint(display.name, () =>
+        fetch(`${api}/wake`, { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" }))
+      const data = await res.json().catch(() => ({})) as { confirmed?: boolean; error?: string }
       if (!res.ok) throw new Error(data.error || "Wake failed")
-      toast.success(data.method === "mdc" ? "Woken via MDC" : "Wake-on-LAN sent")
+      toast.success(data.confirmed === false ? "Wake-on-LAN sent" : `${display.name} is awake`)
       setTimeout(fetchStatus, 3000)
     } catch (err) {
       toast.error(`Wake failed: ${err instanceof Error ? err.message : "Unknown error"}`)
@@ -122,7 +142,7 @@ export function PropertiesPanel({
       const res = await fetch(`${api}/sleep`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ sleepMode: mode }) })
       const data = await res.json().catch(() => ({}))
       if (!res.ok) throw new Error((data as { error?: string }).error || "Sleep failed")
-      toast.success(mode === "scheduled" ? "Sleeping — wake timer armed" : "Display powered off")
+      toast.success(mode === "scheduled" ? "Sleeping, with the wake timer set" : "Display is going to sleep")
       setTimeout(fetchStatus, 2000)
     } catch (err) {
       toast.error(`Sleep failed: ${err instanceof Error ? err.message : "Unknown error"}`)
@@ -134,435 +154,274 @@ export function PropertiesPanel({
     try {
       const res = await fetch(`${api}/sleep/force`, { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" })
       const data = await res.json().catch(() => ({}))
-      if (!res.ok) throw new Error((data as { error?: string }).error || "Force sleep failed")
-      toast.success("Forced into deep sleep")
-      setModeState("manual") // force sleep drops the display back to manual
+      if (!res.ok) throw new Error((data as { error?: string }).error || "Deep sleep failed")
+      toast.success("Display is in deep sleep. Its power button wakes it.")
+      setModeState("manual") // deep sleep drops the display back to manual
       setTimeout(fetchStatus, 2000)
     } catch (err) {
-      toast.error(`Force sleep failed: ${err instanceof Error ? err.message : "Unknown error"}`)
+      toast.error(`Deep sleep failed: ${err instanceof Error ? err.message : "Unknown error"}`)
     } finally { setForceSleeping(false) }
   }
 
-  // ─── Manual replace (push) ───────────────────────────────────────────────
-  // Pushes the image exactly as the file is; calibration happens server-side
-  const pushBlob = async (blob: Blob) => {
-    const form = new FormData()
-    form.append("image", blob, "display.jpg")
-    form.append("sleepAfter", String(sleepAfter))
-    form.append("sleepMode", mode)
-    const res = await fetch(`${api}/push`, { method: "POST", body: form })
-    const data = await res.json().catch(() => ({}))
-    if (!res.ok) throw new Error((data as { error?: string }).error || "Push failed")
-    onDisplayUpdated()
-    setTimeout(fetchStatus, 2000)
-  }
+  // ─── Image designer ──────────────────────────────────────────────────────
+  const lastImageUrl = display.host ? `${api}/last-image?t=${lastImageTs}` : null
 
-  const handleReplace = async (file: File) => {
-    if (!file.type.startsWith("image/")) { toast.error("Please choose an image file"); return }
-    setPushing(true)
-    try {
-      await pushBlob(file)
-      toast.success(`Image pushed to ${display.name}`)
-    } catch (err) {
-      toast.error(`Push failed: ${err instanceof Error ? err.message : "Unknown error"}. If the display is in deep sleep, press its power button first.`)
-    } finally { setPushing(false) }
-  }
-
-  // Open the tuner against the ORIGINAL art + its saved transform — edits are
-  // stored as overrides, never baked into the source, so a shrunk-and-placed
-  // image stays individually resizable on the next visit
-  const openEditor = async () => {
+  // Opens against the ORIGINAL art + its saved design. Designs are stored as
+  // overrides, never baked into the source, so they stay editable next time.
+  const openCurrent = async () => {
+    if (!lastImageUrl) return
     try {
       const [editRes, srcRes] = await Promise.all([
         fetch(`${api}/current-edit`),
         fetch(`${api}/current-source`, { method: "HEAD" }),
       ])
-      const data = editRes.ok ? await editRes.json() as { edit?: LightboxResult | null } : {}
-      setEditorInitial(data.edit ?? null)
-      setEditorSrc(srcRes.ok ? `${api}/current-source?t=${lastImageTs}` : lastImageUrl)
+      const data = editRes.ok ? await editRes.json() as { edit?: DesignResult | null } : {}
+      setDesigner({ src: srcRes.ok ? `${api}/current-source?t=${lastImageTs}` : lastImageUrl, initial: data.edit ?? null, file: null })
     } catch {
-      setEditorInitial(null)
-      setEditorSrc(lastImageUrl)
+      setDesigner({ src: lastImageUrl, initial: null, file: null })
     }
-    setEditorOpen(true)
   }
 
-  // Apply: the server re-renders the source with the edit and pushes it
-  const handleEditorApply = async (result: LightboxResult) => {
-    setEditorApplying(true)
+  const openFile = (file: File) => {
+    if (!file.type.startsWith("image/")) { toast.error("Please choose an image file"); return }
+    setDesigner({ src: URL.createObjectURL(file), initial: null, file })
+  }
+
+  const closeDesigner = () => {
+    if (designer?.file) URL.revokeObjectURL(designer.src)
+    setDesigner(null)
+  }
+
+  const handleSend = async (result: DesignResult) => {
+    if (!designer) return
+    setApplying(true)
     try {
-      const res = await fetch(`${api}/push-edit`, {
-        method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ edit: result }),
+      const res = await withWakeHint(display.name, () => {
+        if (designer.file) {
+          const form = new FormData()
+          form.append("image", designer.file)
+          form.append("edit", JSON.stringify(result))
+          form.append("sleepMode", mode)
+          return fetch(`${api}/push`, { method: "POST", body: form })
+        }
+        return fetch(`${api}/push-edit`, {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ edit: result }),
+        })
       })
-      const data = await res.json().catch(() => ({})) as { error?: string }
-      if (!res.ok) throw new Error(data.error || "Push failed")
-      toast.success("Presentation updated and pushed")
-      setEditorOpen(false)
+      toastSend(display.name, await readSend(res))
+      closeDesigner()
       onDisplayUpdated()
       setTimeout(fetchStatus, 2000)
     } catch (err) {
-      toast.error(`Failed: ${err instanceof Error ? err.message : "Unknown error"}`)
-    } finally { setEditorApplying(false) }
-  }
-
-  // ─── Rotation calibration ────────────────────────────────────────────────
-  const startCalibration = async () => {
-    setCalib("sending")
-    setCalibSel(null)
-    try {
-      const res = await fetch(`${api}/calibrate/start`, { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" })
-      const data = await res.json().catch(() => ({})) as { error?: string }
-      if (!res.ok) throw new Error(data.error || "Failed to send test image")
-      onDisplayUpdated() // refresh thumbnails — the arrow is on the glass now
-      setCalib("awaiting")
-    } catch (err) {
-      toast.error(`Calibration failed: ${err instanceof Error ? err.message : "Unknown error"}. If the display is asleep, wake it first.`)
-      setCalib("idle")
-    }
-  }
-
-  const finishCalibration = async (observed: number | null) => {
-    setCalib("finishing")
-    try {
-      const res = await fetch(`${api}/calibrate/finish`, {
-        method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ observed }),
-      })
-      const data = await res.json().catch(() => ({})) as { error?: string; upRotation?: number }
-      if (!res.ok) throw new Error(data.error || "Calibration failed")
-      if (observed !== null) toast.success("Calibration locked in — previous image restored")
-      else toast.info("Calibration cancelled — previous image restored")
-      onDisplayUpdated()
-    } catch (err) {
-      toast.error(`Calibration failed: ${err instanceof Error ? err.message : "Unknown error"}`)
-    } finally { setCalib("idle") }
-  }
-
-  // ─── Remove from app ─────────────────────────────────────────────────────
-  const handleRemove = async () => {
-    setRemoving(true)
-    try {
-      const res = await fetch(api, { method: "DELETE" })
-      if (!res.ok) throw new Error("Remove failed")
-      toast.success(`Removed "${display.name}" from the app`)
-      setRemoveOpen(false)
-      onDeleted()
-    } catch (err) {
-      toast.error(err instanceof Error ? err.message : "Failed to remove display")
-    } finally { setRemoving(false) }
+      toast.error(`Couldn't send: ${err instanceof Error ? err.message : "Unknown error"}`)
+    } finally { setApplying(false) }
   }
 
   // ─── Render ──────────────────────────────────────────────────────────────
-  const lastImageUrl = display.host ? `${api}/last-image?t=${lastImageTs}` : null
+  const orientation = displayOrientation(display)
+  const hasImage = !!lastImageUrl && !imgError
 
   return (
     <RailPanelShell open={open}>
-      {/* Header: name + status, refresh/remove stacked on the right */}
-      <div className="px-3 pt-3 pb-2 border-b border-border shrink-0 flex items-start gap-2">
-        <div className="flex-1 min-w-0">
-        <div className="flex items-center gap-2">
-          <Monitor className="h-4 w-4 text-primary shrink-0" />
+      {/* Header: name + status */}
+      <div className="flex shrink-0 items-start gap-2 border-b border-border px-4 pb-3 pt-3.5">
+        <div className="min-w-0 flex-1">
           <Input
+            aria-label="Display name"
             value={name}
             onChange={e => setName(e.target.value)}
-            onBlur={() => { if (name.trim() && name !== display.name) saveField({ name: name.trim() }) }}
-            className="h-7 text-sm font-semibold border-none bg-transparent p-0 shadow-none focus-visible:ring-0"
+            onBlur={() => { if (name.trim() && name !== display.name) onPatchDisplay(display.id, { name: name.trim() }) }}
+            onKeyDown={e => { if (e.key === "Enter") e.currentTarget.blur() }}
+            className="h-6 rounded-md border-none bg-transparent p-0 text-[15px] font-semibold shadow-none focus-visible:ring-0"
           />
-        </div>
-        <div className="flex items-center gap-3 text-xs text-muted-foreground mt-1">
-          {status ? (
-            <>
-              {status.battery && (
-                <span
-                  className={`flex items-center gap-1 ${status.battery.charging ? "text-green-400" : ""}`}
-                  title={status.battery.charging ? `Battery ${status.battery.level}% — charging` : `Battery ${status.battery.level}%`}
-                >
-                  {status.battery.charging ? <BatteryCharging className="h-3.5 w-3.5" /> : <BatteryMedium className="h-3.5 w-3.5" />}
-                  {status.battery.level}%
+          <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-0.5 text-xs text-muted-foreground">
+            {status ? (
+              <>
+                {/* Reachable = awake (e-paper power reads "Off" between refreshes) */}
+                <span className="flex items-center gap-1 text-emerald-400" title={`Reachable, so it accepts images (panel power: ${status.power ?? "unknown"})`}>
+                  <Power className="h-3 w-3" /> Awake
                 </span>
-              )}
-              {/* Reachable = awake (e-paper power reads "Off" between refreshes) */}
-              <span className="text-green-500" title={`Reachable — accepts pushes (panel power: ${status.power ?? "unknown"})`}>
-                <Power className="h-3 w-3 inline mr-0.5" />Awake
-              </span>
-              {status.networkStandby != null && (
-                <span className={status.networkStandby ? "text-sky-400" : ""}>
-                  {status.networkStandby
-                    ? <><Wifi className="h-3 w-3 inline mr-0.5" />Light</>
-                    : <><WifiOff className="h-3 w-3 inline mr-0.5" />Deep</>}
-                </span>
-              )}
-              {status.sleepTimer && (
-                <span className="text-amber-500">
-                  <Moon className="h-3 w-3 inline mr-0.5" />{Math.ceil(status.sleepTimer.remainingMs / 60000)}m
-                </span>
-              )}
-            </>
-          ) : (
-            <span>Status unknown — display may be asleep</span>
-          )}
+                {status.battery && (
+                  <span
+                    className={`flex items-center gap-1 ${status.battery.charging ? "text-emerald-400" : ""}`}
+                    title={status.battery.charging ? `Battery ${status.battery.level}%, charging` : `Battery ${status.battery.level}%`}
+                  >
+                    {status.battery.charging ? <BatteryCharging className="h-3.5 w-3.5" /> : <BatteryMedium className="h-3.5 w-3.5" />}
+                    {status.battery.level}%
+                  </span>
+                )}
+                {status.networkStandby != null && (
+                  <span
+                    className="flex items-center gap-1"
+                    title={status.networkStandby ? "Network standby: can be woken remotely" : "Deep sleep: can't be woken remotely"}
+                  >
+                    {status.networkStandby ? <Wifi className="h-3 w-3" /> : <WifiOff className="h-3 w-3" />}
+                    {status.networkStandby ? "Standby" : "Deep"}
+                  </span>
+                )}
+                {status.sleepTimer && (
+                  <span className="flex items-center gap-1 text-amber-500" title="Time until this app puts it to sleep">
+                    <Moon className="h-3 w-3" /> {Math.ceil(status.sleepTimer.remainingMs / 60000)}m
+                  </span>
+                )}
+              </>
+            ) : (
+              <span>{display.host ? "Asleep or unreachable" : "Not connected yet"}</span>
+            )}
+          </div>
         </div>
-        </div>
-        <div className="flex flex-col items-center gap-1 shrink-0">
-          <Button variant="ghost" size="icon" className="h-6 w-6" onClick={fetchStatus} disabled={statusLoading} title="Refresh status">
-            <RefreshCw className={`h-3 w-3 ${statusLoading ? "animate-spin" : ""}`} />
-          </Button>
-          <button
-            className="flex h-6 w-6 items-center justify-center rounded-md text-muted-foreground/50 hover:text-destructive hover:bg-accent transition-colors"
-            title="Remove display from app"
-            onClick={() => setRemoveOpen(true)}
-          >
-            <Trash2 className="h-3 w-3" />
-          </button>
-        </div>
+        <Button variant="ghost" size="icon" className="h-7 w-7 shrink-0" onClick={fetchStatus} disabled={statusLoading} aria-label="Refresh status" title="Refresh status">
+          <RefreshCw className={`h-3.5 w-3.5 ${statusLoading ? "animate-spin" : ""}`} />
+        </Button>
+        <Button variant="ghost" size="icon" className="h-7 w-7 shrink-0" onClick={onOpenSettings} aria-label="Display settings" title="Display settings">
+          <Settings className="h-3.5 w-3.5" />
+        </Button>
       </div>
 
-      <div className="flex-1 overflow-y-auto px-3 py-3 space-y-4">
-        {/* Control bar */}
-        <div className="flex items-center gap-2">
-          <Button variant="outline" size="sm" className="flex-1 gap-1.5 h-8 text-xs" onClick={handleWake} disabled={waking || (!display.mac && !display.host)}>
-            {waking ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Power className="h-3.5 w-3.5" />} Wake
-          </Button>
-          <Button variant="outline" size="sm" className="flex-1 gap-1.5 h-8 text-xs" onClick={handleSleep} disabled={sleeping || !display.host}>
-            {sleeping ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Moon className="h-3.5 w-3.5" />} Sleep
-          </Button>
-          <Button variant="destructive" size="sm" className="flex-1 gap-1.5 h-8 text-xs" onClick={handleForceSleep} disabled={forceSleeping || !display.host || !display.pin}>
-            {forceSleeping ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <PowerOff className="h-3.5 w-3.5" />} Force
-          </Button>
-        </div>
-
-        {/* Connection settings */}
-        <div className="space-y-2">
-          <SectionLabel>Connection</SectionLabel>
-          <div className="grid grid-cols-2 gap-2">
-            <div className="space-y-1">
-              <Label className="text-xs text-muted-foreground">IP</Label>
-              <Input value={host} onChange={e => setHost(e.target.value)}
-                onBlur={() => { if (host !== display.host) saveField({ host }) }}
-                placeholder="192.168.1.37" className="h-8 text-xs" />
-            </div>
-            <div className="space-y-1">
-              <Label className="text-xs text-muted-foreground">PIN</Label>
-              <Input value={pin} onChange={e => setPin(e.target.value)}
-                onBlur={() => { if (pin !== display.pin) saveField({ pin }) }}
-                placeholder="000000" className="h-8 text-xs" />
-            </div>
-            <div className="col-span-2 space-y-1">
-              <Label className="text-xs text-muted-foreground">MAC address <span className="opacity-60">(Wake-on-LAN)</span></Label>
-              <Input value={mac} onChange={e => setMac(e.target.value)}
-                onBlur={() => { if (mac !== display.mac) saveField({ mac }) }}
-                placeholder="00:11:22:33:44:55" className="h-8 text-xs" />
-            </div>
-          </div>
-        </div>
-
-        <Divider />
-
-        {/* Rotation — calibration via test arrow */}
-        <div className="space-y-2">
-          <div className="flex items-center gap-1.5">
-            <SectionLabel>Rotation</SectionLabel>
-            <button
-              className="flex h-6 w-6 items-center justify-center rounded-md text-muted-foreground hover:text-foreground hover:bg-accent transition-colors"
-              title="Which way is up on the physical display — applied when pushing images."
-              onClick={() => setCalibInfo(v => !v)}
-            >
-              <Info className="h-3.5 w-3.5" />
+      <div className="scroll-thin flex-1 space-y-4 overflow-y-auto px-4 py-4">
+        {/* The image on the display, framed like the display */}
+        <div
+          className={`relative overflow-hidden rounded-[3px] border-[3px] bg-black transition-colors ${
+            fileOver ? "border-primary" : "border-[#e8e5dd]"
+          } ${orientation === "landscape" ? "w-full" : "mx-auto h-[min(40vh,360px)]"}`}
+          style={{ aspectRatio: String(displayAspect(display)) }}
+          onDragOver={e => { e.preventDefault(); setFileOver(true) }}
+          onDragLeave={() => setFileOver(false)}
+          onDrop={e => { e.preventDefault(); setFileOver(false); const f = e.dataTransfer.files[0]; if (f) openFile(f) }}
+        >
+          {hasImage ? (
+            <button type="button" className="group block h-full w-full" title="Open in the image designer" onClick={openCurrent}>
+              <img src={lastImageUrl} alt="On the display now" className="h-full w-full object-contain" onError={() => setImgError(true)} />
+              <span className="absolute inset-0 flex items-center justify-center bg-black/40 opacity-0 transition-opacity group-hover:opacity-100">
+                <span className="flex items-center gap-1.5 rounded-lg bg-white/90 px-2.5 py-1.5 text-xs font-medium text-black">
+                  <Pencil className="h-3 w-3" /> Edit image
+                </span>
+              </span>
             </button>
-            <div className="flex-1" />
-            <button
-              className={`flex h-6 w-6 items-center justify-center rounded-md transition-colors ${
-                upLocked
-                  ? "text-foreground bg-primary/10"
-                  : "text-muted-foreground hover:text-foreground hover:bg-accent"
-              }`}
-              title={upLocked ? "Unlock rotation" : "Lock rotation (protects calibration)"}
-              onClick={() => saveField({ upLocked: !upLocked })}
-            >
-              {upLocked ? <Lock className="h-3.5 w-3.5" /> : <LockOpen className="h-3.5 w-3.5" />}
-            </button>
-          </div>
-
-          {calibInfo && (
-            <p className="text-[11px] text-muted-foreground -mt-1">Which way is up on the physical display — applied when pushing images.</p>
+          ) : (
+            <div className="flex h-full flex-col items-center justify-center gap-1 px-3 text-center text-white/45">
+              <Monitor className="h-7 w-7 opacity-50" />
+              <span className="text-xs">{fileOver ? "Drop to open in the designer" : "No image yet"}</span>
+            </div>
           )}
+        </div>
 
-          {calib === "sending" || calib === "finishing" ? (
-            <div className="flex items-center gap-2 rounded-lg border border-border bg-muted/40 px-3 py-2 text-xs text-muted-foreground">
-              <Loader2 className="h-3.5 w-3.5 animate-spin shrink-0" />
-              {calib === "sending" ? "Sending test arrow to the display…" : "Saving calibration and restoring the previous image…"}
-            </div>
-          ) : calib === "awaiting" ? (
-            <div className="space-y-2 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2">
-              <p className="text-xs text-amber-500">
-                <span className="font-medium">2/2</span> · Click the direction the arrow is pointing on your display, then confirm.
-              </p>
-              <div className="flex items-center gap-1.5">
-                {([0, 90, 180, 270] as const).map(deg => (
-                  <button
-                    key={deg}
-                    className={`flex h-8 w-8 items-center justify-center rounded-md border transition-colors ${
-                      calibSel === deg
-                        ? "border-amber-400 bg-amber-500/30 text-amber-300"
-                        : "border-amber-500/40 text-amber-400 hover:bg-amber-500/20"
-                    }`}
-                    title={`Arrow points ${deg === 0 ? "up" : deg === 90 ? "right" : deg === 180 ? "down" : "left"}`}
-                    onClick={() => setCalibSel(deg)}
-                  >
-                    <ArrowUp className="h-4 w-4" style={{ transform: `rotate(${deg}deg)` }} />
-                  </button>
-                ))}
-                <div className="flex-1" />
-                <button
-                  className={`flex h-8 w-8 items-center justify-center rounded-md border transition-colors ${
-                    calibSel === null
-                      ? "border-border text-muted-foreground/40 cursor-default"
-                      : "border-green-500/50 text-green-400 hover:bg-green-500/20"
-                  }`}
-                  title="Confirm — save calibration"
-                  disabled={calibSel === null}
-                  onClick={() => { if (calibSel !== null) finishCalibration(calibSel) }}
-                >
-                  <Check className="h-4 w-4" />
-                </button>
-                <button
-                  className="flex h-8 w-8 items-center justify-center rounded-md border border-border text-muted-foreground hover:text-foreground hover:bg-accent transition-colors"
-                  title="Cancel — restore the previous image"
-                  onClick={() => finishCalibration(null)}
-                >
-                  <X className="h-4 w-4" />
-                </button>
+        <div className="flex gap-2">
+          <Button size="sm" className="flex-1 gap-1.5" onClick={() => fileRef.current?.click()}>
+            <ImagePlus className="h-3.5 w-3.5" /> New image
+          </Button>
+          <Button variant="outline" size="sm" className="flex-1 gap-1.5" onClick={openCurrent} disabled={!hasImage}>
+            <Pencil className="h-3.5 w-3.5" /> Edit image
+          </Button>
+          <input
+            ref={fileRef} type="file" accept="image/*" className="hidden" aria-label="Choose an image"
+            onChange={e => { const f = e.target.files?.[0]; if (f) openFile(f); e.target.value = "" }}
+          />
+        </div>
+
+        {delivery && (
+          <div className={`space-y-2 rounded-lg border px-3 py-2.5 text-xs ${
+            delivery.state === "failed" ? "border-destructive/40 bg-destructive/10" : "border-amber-500/30 bg-amber-500/10"
+          }`}>
+            <div className="flex items-start gap-2">
+              {delivery.state === "failed"
+                ? <TriangleAlert className="mt-0.5 h-3.5 w-3.5 shrink-0 text-destructive" />
+                : delivery.state === "sending"
+                  ? <Loader2 className="mt-0.5 h-3.5 w-3.5 shrink-0 animate-spin text-amber-500" />
+                  : <Hourglass className="mt-0.5 h-3.5 w-3.5 shrink-0 text-amber-500" />}
+              <div className="min-w-0 space-y-0.5">
+                <p className="font-medium">
+                  {delivery.state === "failed" ? "Not sent" : delivery.state === "sending" ? "Sending" : "Waiting to send"}
+                  {delivery.label ? `: ${delivery.label}` : ""}
+                </p>
+                {delivery.error && delivery.state !== "sending" && <p className="text-muted-foreground">{delivery.error}</p>}
+                {delivery.state === "pending" && delivery.nextAttemptAt && (
+                  <p className="text-muted-foreground">
+                    Tried {delivery.attempts} time{delivery.attempts === 1 ? "" : "s"}. Next try {fromNow(delivery.nextAttemptAt)}, or as soon as it's awake.
+                  </p>
+                )}
               </div>
             </div>
-          ) : !upLocked ? (
-            <div className="space-y-2">
-              <p className="text-[11px] text-muted-foreground">
-                <span className="font-medium text-foreground/70">1/2</span> · Send a test image, then check how it appears on your display.
-              </p>
-              <div className="flex items-center">
-                <Button
-                  size="sm" variant="outline" className="h-8 px-2.5 text-xs gap-1.5"
-                  title="Send a test arrow to the display"
-                  onClick={startCalibration}
+            <div className="flex justify-end gap-1">
+              <Button variant="ghost" size="xs" onClick={cancelDelivery} disabled={!!deliveryBusy || delivery.state === "sending"}>
+                {deliveryBusy === "cancel" && <Loader2 className="h-3 w-3 animate-spin" />} Cancel
+              </Button>
+              <Button variant="outline" size="xs" onClick={retryDelivery} disabled={!!deliveryBusy || delivery.state === "sending"}>
+                {deliveryBusy === "retry" && <Loader2 className="h-3 w-3 animate-spin" />} Try now
+              </Button>
+            </div>
+          </div>
+        )}
+
+        <div className="space-y-2 border-t border-border pt-4">
+          <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1">
+            <span className="text-xs text-muted-foreground">Orientation</span>
+            <Segmented
+              label="Orientation"
+              value={orientation}
+              options={[
+                { value: "portrait", label: <><RectangleVertical className="h-3.5 w-3.5" /> Portrait</> },
+                { value: "landscape", label: <><RectangleHorizontal className="h-3.5 w-3.5" /> Landscape</> },
+              ]}
+              onChange={o => onOrientationChange(display, o)}
+            />
+          </div>
+          <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1">
+            <span className="text-xs text-muted-foreground">Power</span>
+            <div className="flex gap-1">
+              <Button variant="outline" size="xs" className="gap-1.5" onClick={handleWake} disabled={waking || (!display.mac && !display.host)}>
+                {waking ? <Loader2 className="h-3 w-3 animate-spin" /> : <Power className="h-3 w-3" />} Wake
+              </Button>
+              <Button variant="outline" size="xs" className="gap-1.5" onClick={handleSleep} disabled={sleeping || !display.host}>
+                {sleeping ? <Loader2 className="h-3 w-3 animate-spin" /> : <Moon className="h-3 w-3" />} Sleep
+              </Button>
+              <Button
+                variant="outline" size="xs" className="gap-1.5"
+                title="Turns networking off, so only its power button or a scheduled wake can bring it back"
+                onClick={handleForceSleep} disabled={forceSleeping || !display.host || !display.pin}
+              >
+                {forceSleeping ? <Loader2 className="h-3 w-3 animate-spin" /> : <PowerOff className="h-3 w-3" />} Deep
+              </Button>
+            </div>
+          </div>
+          {display.host && display.pin && (
+            <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1">
+              <span className="text-xs text-muted-foreground">Clock</span>
+              <div className="flex items-center gap-2">
+                <span
+                  className={`flex items-center gap-1 text-xs ${shownClock && Math.abs(shownClock.drift ?? 0) >= 90 ? "text-amber-500" : "text-muted-foreground"}`}
+                  title={shownClock?.checkedAt ? `What the display's clock said, read ${new Date(shownClock.checkedAt).toLocaleString()}` : undefined}
                 >
-                  <Crosshair className="h-3.5 w-3.5" /> Test
+                  <Clock3 className="h-3 w-3" />
+                  {shownClock?.time
+                    ? `${new Date(shownClock.time).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })} · ${driftText(shownClock.drift)}`
+                    : shownClock ? "Unreadable" : "Not read yet"}
+                </span>
+                <Button variant="outline" size="xs" className="gap-1.5" onClick={handleSyncClock} disabled={syncing} title="Set the display's clock to this app's time">
+                  {syncing && <Loader2 className="h-3 w-3 animate-spin" />} Sync
                 </Button>
               </div>
             </div>
-          ) : null}
-        </div>
-
-        <Divider />
-
-        <DeviceSettingsSection
-          key={display.id}
-          api={api}
-          configured={!!display.host && !!display.pin}
-          onPinChanged={newPin => { setPin(newPin); saveField({ pin: newPin }) }}
-        />
-
-        <Divider />
-
-        {/* Image — current image preview + manual replace */}
-        <div className="space-y-3">
-          <SectionLabel>Image</SectionLabel>
-          <div className="space-y-2">
-            <div
-              className={`relative rounded-lg border ${fileOver ? "border-primary border-dashed bg-primary/5" : "border-border"} overflow-hidden`}
-              onDragOver={e => { e.preventDefault(); setFileOver(true) }}
-              onDragLeave={() => setFileOver(false)}
-              onDrop={e => { e.preventDefault(); setFileOver(false); const f = e.dataTransfer.files[0]; if (f) handleReplace(f) }}
-            >
-              {lastImageUrl && !imgError ? (
-                <img
-                  src={lastImageUrl} alt="Current"
-                  className="w-full max-h-56 object-contain bg-black/40 cursor-pointer hover:opacity-90 transition-opacity"
-                  title="Click to tune presentation (rotate, scale, crop)"
-                  onClick={openEditor}
-                  onError={() => setImgError(true)}
-                />
-              ) : (
-                <div className="flex flex-col items-center justify-center py-10 text-muted-foreground">
-                  <Monitor className="h-8 w-8 opacity-30 mb-1" />
-                  <span className="text-xs">No image on display</span>
-                </div>
-              )}
-              {pushing && (
-                <div className="absolute inset-0 flex items-center justify-center bg-background/60">
-                  <Loader2 className="h-5 w-5 animate-spin" />
-                </div>
-              )}
-            </div>
-            <button
-              className="w-full flex items-center justify-center gap-2 py-2 border border-dashed rounded-lg border-muted-foreground/25 hover:border-muted-foreground/50 hover:bg-muted/30 transition-colors text-xs text-muted-foreground"
-              onClick={() => fileRef.current?.click()}
-              disabled={pushing}
-            >
-              <Upload className="h-3.5 w-3.5" /> Drop an image or click to replace
-            </button>
-            <input ref={fileRef} type="file" accept="image/*" className="hidden"
-              onChange={e => { const f = e.target.files?.[0]; if (f) handleReplace(f); e.target.value = "" }} />
-          </div>
-
-          {/* History — previously displayed images, dimmed, below the fold */}
-          {history.length > 0 && (
-            <div className="space-y-1.5 pt-1">
-              <SectionLabel>History</SectionLabel>
-              <div className="grid grid-cols-3 gap-1.5">
-                {history.map(h => (
-                  <img
-                    key={h.id}
-                    src={`${api}/history/${h.id}`}
-                    alt=""
-                    loading="lazy"
-                    title={new Date(h.ts).toLocaleString()}
-                    className="w-full aspect-square object-cover rounded-md border border-border opacity-40 hover:opacity-100 transition-opacity"
-                  />
-                ))}
-              </div>
-            </div>
           )}
         </div>
 
       </div>
 
-      {/* Presentation tuner — works on the original source + saved transform */}
-      {editorSrc && (
-        <LightboxEditor
-          open={editorOpen}
-          imageUrl={editorSrc}
+      {designer && (
+        <ImageDesigner
+          imageUrl={designer.src}
           aspect={displayAspect(display)}
-          title={`Tune presentation — ${display.name}`}
-          initial={editorInitial}
-          applying={editorApplying}
-          onApply={handleEditorApply}
-          onClose={() => setEditorOpen(false)}
+          title={display.name}
+          subtitle={designer.file ? "New image" : "On the display now"}
+          initial={designer.initial}
+          defaultProfile={defaultProfile}
+          primaryLabel="Send to display"
+          onPrimary={handleSend}
+          applying={applying}
+          onClose={closeDesigner}
         />
       )}
-
-      {/* Remove confirmation */}
-      <Dialog open={removeOpen} onOpenChange={setRemoveOpen}>
-        <DialogContent className="max-w-sm">
-          <DialogHeader>
-            <DialogTitle>Remove "{display.name}"?</DialogTitle>
-            <DialogDescription>
-              This removes the display from the app, along with its queue, schedule, and image history.
-              The physical display isn't affected — but to control it again you'll need to discover,
-              add, and configure it from scratch.
-            </DialogDescription>
-          </DialogHeader>
-          <div className="flex justify-end gap-2 pt-2">
-            <Button variant="outline" size="sm" onClick={() => setRemoveOpen(false)} disabled={removing}>
-              Cancel
-            </Button>
-            <Button variant="destructive" size="sm" onClick={handleRemove} disabled={removing} className="gap-1.5">
-              {removing ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Trash2 className="h-3.5 w-3.5" />}
-              Remove display
-            </Button>
-          </div>
-        </DialogContent>
-      </Dialog>
     </RailPanelShell>
   )
 }

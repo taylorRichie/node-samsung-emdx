@@ -14,7 +14,9 @@ let depthPipePromise = null;
 async function getDepthPipe() {
   if (!depthPipePromise) {
     depthPipePromise = (async () => {
-      const { pipeline } = await import('@huggingface/transformers');
+      const { pipeline, env } = await import('@huggingface/transformers');
+      // The model (~95 MB) is downloaded on first use, into EMDX_CACHE_DIR if set
+      if (process.env.EMDX_CACHE_DIR) env.cacheDir = path.join(path.resolve(process.env.EMDX_CACHE_DIR), 'models');
       return pipeline('depth-estimation', 'onnx-community/depth-anything-v2-small');
     })();
   }

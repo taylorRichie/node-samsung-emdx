@@ -10,3 +10,12 @@ Artwork/
 gallery/
 tools/.mdc-proxy/
 mdc-capture-*.jsonl
+tools/fake-display/certs/
+tools/fake-display/out/
+tools/fake-display/display-ids.txt
+__pycache__/
+*.pyc
+web/.gallery/
+web/.gallery-thumbs/
+web/.last-push.jpg
+web/dist/

@@ -69,6 +69,9 @@ yargs(hideBin(process.argv))
       if (sleepAfter > 0) console.log(`Sleep after: ${sleepAfter} minutes`);
       console.log('');
 
+      // Set from the display's clock once connected; see Device.getScheduleStart
+      let scheduleStart = { start_date: '1970-01-01', start_time: '00:00:00' };
+
       console.log('🔄 Starting HTTP server...');
       const server = await new Promise((resolve, reject) => {
         const app = express()
@@ -79,9 +82,9 @@ yargs(hideBin(process.argv))
             res.send(JSON.stringify({
               schedule: [
                 {
-                  start_date: '1970-01-01',
+                  start_date: scheduleStart.start_date,
                   stop_date: '2999-12-31',
-                  start_time: '00:00:00',
+                  start_time: scheduleStart.start_time,
                   contents: [
                     {
                       image_url: `http://${localIp}:${port}/image`,
@@ -161,6 +164,9 @@ yargs(hideBin(process.argv))
         await device.connect();
         await device.setNetworkStandby({ enabled: true }).catch(() => {});
         console.log('✅ Connected');
+        const { source, ...start } = await device.getScheduleStart();
+        scheduleStart = start;
+        console.log(`🗓  Entry starts ${start.start_date} ${start.start_time} (${source} clock)`);
         console.log('');
 
         const url = `http://${localIp}:${port}/content.json`;

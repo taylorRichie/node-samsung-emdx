@@ -31,12 +31,12 @@ confirmed on real hardware; the "not supported" list is commands that reliably
 
 | Cmd    | Name / meaning                | Sample response            | Notes |
 | ------ | ----------------------------- | -------------------------- | ----- |
-| `0x0B` | Serial number                 | `"0WPSHNPY900879F"` (ASCII)| Stable per-unit ID. |
+| `0x0B` | Serial number                 | `"0WPSXXXX000000X"` (ASCII)| Stable per-unit ID. |
 | `0x0E` | Software / firmware version   | `"S-RSEDWWC-1050.1"` (ASCII)| |
 | `0x10` | Display / model info          | `02 7A 01` (3 bytes)       | Opaque model code. |
 | `0x1B` | Status container (sub-command)| see below                  | Requires a sub-command byte; `0x73` = battery. |
 | `0x24` | Mode/flag (unconfirmed)       | `0x32` (`'2'`)             | Constant; exact meaning unknown. |
-| `0x25` | On-Timer (auto power-on)      | `0x00` (disabled)          | Get + set both work. |
+| `0x25` | On-Timer (auto power-on)      | `0x00` (disabled)          | Get works. Set is refused on firmware 1130.7; see below. |
 | `0x27` | Color (Custom picture mode)   | `0x19` (25)                | Get + set both work. |
 | `0x67` | Device name                   | `"Display 4"` (ASCII)      | The name set during onboarding. |
 | `0x71` | Picture mode                  | `0x24` (Vivid)             | Get + set both work. `0x22` is Custom. |
@@ -56,7 +56,7 @@ confirmed on real hardware; the "not supported" list is commands that reliably
 | `0x62` | Unknown (text)                 | `62 "Unknown"` |
 | `0x71` | Unknown                        | `71 00` |
 | `0x75` | USB lock                       | `75 00 00` |
-| `0x87` | Returns the display **PIN**    | `87 "014381"` (only after auth) |
+| `0x87` | Returns the display **PIN**    | `87 "123456"` (only after auth) |
 | `0x8C` | Unknown                        | `8C 01` |
 | `0x8D` | Unknown                        | `8D 01` |
 | `0xB0` | Screen protector time          | `B0 80 02 03 00 81 04 03 00 04 0B` |
@@ -72,11 +72,27 @@ the live displays.
 | ------ | ----------------- | ----------------------------------- | ------ |
 | `0x11` | Power             | `0x01` on / `0x00` off              | Powers the panel. **Get is NAK'd** — write-observable only. |
 | `0xB5` | Network standby   | `0x01` on / `0x00` off              | WiFi listener; must be on for WoL to work, off for true deep sleep. |
-| `0x25` | On-Timer          | `[en, repeat, hh, mm, 0x01]`        | Schedules an automatic power-on. |
-| `0xC7` | Content download  | `0x53 0x80 <len> <url>` (url ≤255)  | Points the display at a `content.json` manifest to pull a new image. |
+| `0xC7` | Content download  | `0x53 0x80 <len> <url>` (url ≤255)  | Points the display at a `content.json` manifest to pull a new image. See [Content schedules](#content-schedules). |
 
 Wake-on-LAN is separate from MDC: a UDP magic packet to port 9 (needs the MAC and
-network-standby left on).
+network-standby left on). It can't wake a display in deep sleep.
+
+### `0x25` On-Timer is refused on firmware 1130.7
+
+`lib/Device.mjs` writes `[en, repeat, hh, mm, 0x01]`, and the web app's
+scheduled mode relies on it to wake the display. On `S-RSEDWWC-1130.7` every
+write is NAK'd with `01`, while the get still returns `00`:
+
+| Write | Reply |
+| ----- | ----- |
+| `01 01 12 39 01` (6:57 PM, 24-hour, as the app sends it) | NAK `01` |
+| `01 01 06 3a 00` (6:58 PM, 12-hour with a PM flag like `0xA7`) | NAK `01` |
+| `01 01 08 00 01` (8:00 AM) | NAK `01` |
+| `00 01 0c 00 01` (off) | NAK `01` |
+
+Earlier notes recorded set working, apparently on 1050.1, so a firmware update
+probably removed or moved it. The web app catches and ignores this error, so
+scheduled mode puts the display into deep sleep with no wake armed.
 
 ### Captured from Samsung's app
 
@@ -119,14 +135,14 @@ before relying on it.
 | Screen protector time | `0x1B`/`0xB0` | `b0 80 02 <HH> <MM>`; 3 am is `03 00`, 24-hour format unconfirmed. Read adds `81 04 <HH> <MM> 04 0b` | Confirmed |
 | Wallpaper color | `0x21`/`0x90` | `90 00 <n>`: 0 white, 1 black, 2 red, 3 green, 4 blue, 5 yellow | Confirmed |
 | Sleep mode | `0xB5` | `00` deep sleep, `01` network standby on; the app follows it with `0xC6` `81 08` (see below) | Confirmed |
-| Sleep after | `0xC6`/`0x81` | `81 f0 00 <minutes>`: 16 min is `f0 00 10`, 18 min is `f0 00 12`. Above 255 minutes unconfirmed | Confirmed |
+| Sleep after | `0xC6`/`0x81` | `81 f0 00 <minutes>`: 16 min is `f0 00 10`, 18 min is `f0 00 12`. Some values are stored as presets: writing 5 min is ACKed as `81 f0 00 05` but reads back `81 06`, while 7 min reads back `81 f0 00 07`. 5 min is the lowest Samsung's app offers. Above 255 minutes unconfirmed | Confirmed |
 | Sleep when content finishes | `0xC7`/`0x53` | `53 01 <00/01>`; read with `53` | Confirmed |
 | Battery warning | `0x1B`/`0x73` | `73 00 <00/01>` | Confirmed |
 | Button lock | `0x5F` | `00` off, `01` on | Confirmed |
 | USB lock | `0x1B`/`0x75` | `75 00 <00/01>` | Confirmed |
 | Picture mode | `0x71` | `24` Vivid, `22` Custom; other modes not captured | Confirmed |
 | Color (Custom mode) | `0x27` | The value the app shows (11 is `0b`); default 25 | Confirmed |
-| PoE charging and data | `0x22`/`0x10` | `10 00 03 07 d0 d2`, same bytes in both captures; other options and off not captured; ACK takes ~3 s | Likely |
+| **Turn on Bluetooth setup** (not PoE) | `0x22`/`0x10` | `10 00 03 07 d0 d2`: `00`, length `03`, time `07d0` (2000 ms, big-endian), `d2`. Samsung's `MDC_COMMAND_TURN_ON_BLE`; the display then offers its Bluetooth setup service (docs/BLE.md). ACK after ~3 s. Any other time tried (60000) is NAK'd `10 01` | Confirmed |
 | Restart | `0xD2`/`0x23` | `23`; display dropped within 0.5 s, back within 55 s | Likely |
 | Thumbnail upload | `0xC7`/`0x54` | `54 <url>`; reply `54 <len> <url>` | Likely |
 
@@ -134,7 +150,9 @@ Still unexplained:
 
 - **`0xC6` `81 08`.** The value before any custom sleep after was set. The app
   writes it after every sleep mode change, and a later read returns `81 08`, so
-  changing sleep mode replaces a custom sleep after. Probably a preset.
+  changing sleep mode replaces a custom sleep after. A preset, like `81 06`
+  (5 minutes), but its length is unknown. Writing other round values (10, 15,
+  30, 60 minutes) and reading them back would map the rest.
 - **`0x1B` `b0 00 00`.** Follows every picture change. It usually NAKs (`b0 01`)
   after ~3 s, and once ACKed immediately, after color returned to its default.
 - **Custom mode sliders.** Entering Custom also writes `0x21`/`0x4F` (`00`), `0x24`
@@ -192,15 +210,147 @@ exist".
   sometimes just goes silent (looks like a connect timeout). Don't assume a
   timeout means "asleep" — it can mean "wrong PIN" or "session busy."
 - **Sleeping displays are invisible.** In deep sleep (network standby off) the
-  unit answers nothing — not MDC, not SSDP, not ping. Wake via WoL first.
+  unit answers nothing — not MDC, not SSDP, not ping, not WoL. Only its power
+  button or one of its own [content schedule](#content-schedules) entries wakes
+  it. In network standby, WoL works.
+- **Shutting down looks awake.** For a short while after it puts itself to
+  sleep, the display still answers ping but refuses MDC (`ECONNREFUSED`).
+  Retry until a session takes rather than trusting ping.
+
+## Samsung's own command list
+
+From `MDCConstant` in the decompiled E-Paper app (Android 1.3.3). Names are
+Samsung's; "sub" is the first data byte. This settles several guesses above:
+`0x1B`/`0xB0` is the daily refresh, `0x1B`/`0x71` is PoE+, `0xB6` is DST,
+`0xD2`/`0x10` is the factory menu, and `0x22`/`0x10` turns on Bluetooth setup.
+
+| Name | Cmd | Sub |
+| ---- | --- | --- |
+| OOBE_STATUS | `0x1B` | `0xB1` |
+| DEVICE_NAME | `0x67` | |
+| TERM_CONDITION | `0xD2` | `0x70` |
+| ORIENTATION | `0xC8` | `0x81` |
+| CONTENT_PLAYER | `0xC7` | `0x81` |
+| SLEEP (power) | `0x11` | |
+| SLEEP_TIME | `0xC6` | `0x81` |
+| DAILY_REFRESH | `0x1B` | `0xB0` |
+| NETWORK_STANDBY | `0xB5` | |
+| DATE_TIME | `0xA7` | |
+| PIN | `0x1B` | `0x87` |
+| BG_COLOR | `0x21` | `0x90` |
+| BRIGHTNESS | `0x21` | `0x4F` |
+| CONTRAST | `0x24` | |
+| GAMMA | `0x96` | |
+| COLOR | `0x27` | |
+| CONTENT_DOWNLOAD | `0xC7` | `0x53` |
+| MODE_SETTING (picture mode) | `0x71` | |
+| BATTERY | `0x1B` | `0x73` |
+| BUTTON_LOCK | `0x5F` | |
+| USB_LOCK | `0x1B` | `0x75` |
+| DST | `0xB6` | |
+| RESET_CONTROL | `0x9F` | |
+| EMPTY_STORAGE | `0x1B` | `0x74` |
+| CURRENT_VERSION_SOFTWARE | `0x0E` | |
+| SOFTWARE_UPDATE / _PROGRESS / _RESULT | `0x1B` | `0x60` / `0x61` / `0x62` |
+| GET_CONTACT_SAMSUNG | `0xD2` | `0x00` |
+| SERIAL_NUMBER | `0x0B` | |
+| USB_PLAYER_FUNCTION / _SLIDE_SHOW | `0xC7` | `0x60` / `0x50` |
+| CUSTOM_APP_PLAYER URL / INSTALL / CONFIG | `0xC7` | `0x82` / `0x51` / `0x52` |
+| DOWNLOAD_FILE_CERT / NETWORK_CERT_LIST / APP_CERT_LIST | `0xD2` | `0x20` / `0x22` / `0x23` |
+| NETWORK_CONFIGURATION | `0x1B` | `0x82` |
+| WIFI_ADDRESS | `0x1B` | `0x81` |
+| NETWORK_SETTING | `0x1B` | `0x8C` |
+| POE_PLUS | `0x1B` | `0x71` |
+| GET_THUMBNAIL | `0xC7` | `0x54` |
+| TURN_ON_BLE | `0x22` | `0x10` |
+| NTP_SETTINGS / NTP_TIMEZONES | `0xCA` / `0xD2` | `0x40` / `0x71` |
+| LOW_POWER_WIFI | `0xD2` | `0xB0` |
+| SUPPORT_FEATURE | `0xCB` | |
+| DISPLAY_RESOLUTION | `0x1B` | `0x13` |
+| FACTORY_MENU | `0xD2` | `0x10` |
+
+## Content schedules
+
+The manifest sent with `0xC7`/`0x53` is a schedule, not just an image, and the
+display runs it by itself, waking from deep sleep when an entry starts. Tested
+on firmware 1130.7 with network standby off and "sleep when content finishes"
+on.
+
+```json
+{
+  "schedule": [
+    { "start_date": "1970-01-01", "stop_date": "2999-12-31", "start_time": "00:00:00",
+      "contents": [{ "image_url": "…/A", "file_id": "…", "file_path": "…", "duration": 91326, "file_size": "…", "file_name": "….jpg" }] },
+    { "start_date": "2026-11-10", "stop_date": "2999-12-31", "start_time": "19:15:00",
+      "contents": [{ "image_url": "…/B", "…": "…" }] }
+  ],
+  "name": "…", "version": 1, "create_time": "…", "id": "…",
+  "program_id": "com.samsung.ios.ePaper", "content_type": "ImageContent", "deploy_type": "MOBILE"
+}
+```
+
+- **One image per entry.** Two images in one entry's `contents` (180 s
+  `duration` each) download and report "Successful", but neither is drawn.
+- **Everything downloads up front.** The display fetched A and B when the
+  manifest arrived and made no requests later.
+- **It wakes itself from deep sleep.** Times are the display's local time. The
+  test run, with B at 19:15:00:
+
+  | Time | Display |
+  | ---- | ------- |
+  | 19:10:22 | Fetched the manifest, A and B |
+  | 19:11:14 | Asleep (no ping) |
+  | 19:12:27 | Woke by itself, no network traffic |
+  | 19:13:58 | Asleep |
+  | 19:14:22 | Woke by itself and drew B, done by 19:15 |
+  | 19:16:29 | Asleep; no further wakes up to 19:19:50 |
+
+  So each change costs two wakes: one about 2½ minutes early, then one in time
+  to finish drawing at the start time.
+- **The entry that started most recently wins, even from an older manifest.**
+  With B (from today 19:15) showing, a new manifest whose only entry started
+  `1970-01-01 00:00:00`, the web app's format, downloaded and reported
+  "Successful" but was never drawn. The same image in an entry starting at the
+  current minute was drawn at once. With equal start times, the newer manifest
+  wins: A from 1970 replaced the web app's 1970 image. So a manifest meant to
+  show now should start its entry at the current time, or a display that holds
+  a dated entry will ignore it. The web app and CLI now do this:
+  `Device.getScheduleStart()` reads the display's clock (`0xA7`) and starts the
+  entry at that minute, falling back to local time if the read fails.
+
+### Progress reports
+
+While it downloads, the display POSTs JSON to `/content-transfer-progress` on
+the host that served the manifest, once per file and once when it's done:
+
+```json
+{
+  "content_id": "<manifest id>", "content_name": "<manifest name>", "device_id": "<serial>",
+  "current_image_status": { "image_id": "<file_id>", "image_name": "<file_name>",
+                            "progress": "100", "status": "Successful", "error_message": "" },
+  "progress": "50", "status": "Downloading", "error_message": ""
+}
+```
+
+The final report has `"progress": "100", "status": "Successful"`. A 404 reply
+doesn't stop the download or the drawing; the web app doesn't handle these yet.
+
+### Still unknown
+
+- Whether `start_time` repeats daily within `start_date`–`stop_date`.
+- Whether a new manifest replaces the old entries or is merged with them. The
+  "most recent start wins" result fits either.
+- How many entries the display holds, and whether there's a `stop_time`.
+- What `duration` means for a single image (the web app sends 91326).
 
 ## Library coverage
 
 `lib/Device.mjs` implements: `getSerialNumber` (0x0B), `getSoftwareVersion`
 (0x0E), `getModelInfo` (0x10), `getDeviceName` (0x67), `getPowerState` (0x11,
 returns null — NAK'd), `getBatteryState` (0x1B/0x73), `getNetworkStandby` /
-`setNetworkStandby` (0xB5), `getOnTimer` / `setOnTimer` (0x25), `getClock`
-(0xA7), `setPower` (0x11), `setContentDownload` (0xC7), and `wakeup` (WoL). The
+`setNetworkStandby` (0xB5), `getOnTimer` / `setOnTimer` (0x25, set refused on 1130.7), `getClock`
+(0xA7), `getScheduleStart` (the display's current time as a schedule entry
+start), `setPower` (0x11), `setContentDownload` (0xC7), and `wakeup` (WoL). The
 generic `sendCommand({ commandId, data })` is the escape hatch for anything else.
 
 `lib/Settings.mjs` describes the settings captured from Samsung's app.
@@ -210,6 +360,11 @@ settings**, except PoE and restart, which aren't fully mapped. Two differences
 from the app: `setSetting` doesn't send `0xC6` `81 08` after a sleep mode change,
 so a custom sleep after survives it, and it doesn't rewrite the Custom picture
 values when entering that mode.
+
+Orientation is shared with the viewer's portrait and landscape buttons, and it
+decides the size images are rendered at. The display is the source of truth: the
+viewer changes once the display accepts a write, and follows the display whenever
+the server reads it. `upRotation` is a separate calibration and isn't changed.
 
 ## Capturing commands from Samsung's app
 
@@ -232,7 +387,7 @@ highlighted.
 4. **Start the proxy** on that machine, pointing at the display's temporary IP:
 
    ```bash
-   node tools/mdc-proxy.mjs --host 10.10.1.199
+   node tools/mdc-proxy.mjs --host 192.168.1.37
    ```
 
    On macOS 15+, Node needs Local Network permission (System Settings →
@@ -243,7 +398,7 @@ highlighted.
    ```bash
    docker run --rm -it -p 1515:1515 -e TZ=America/Chicago \
      -v "$PWD/tools:/tools" -v "$PWD:/work" -w /work \
-     samsung-emdx node /tools/mdc-proxy.mjs --host 10.10.1.199
+     samsung-emdx node /tools/mdc-proxy.mjs --host 192.168.1.37
    ```
 
    (The image has no `openssl`, so create the proxy's certificate once by

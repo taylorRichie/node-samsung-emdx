@@ -4,7 +4,36 @@
 
 export const ADJUST_KEYS = ['brightness', 'contrast', 'saturation', 'midtones', 'sharpen'];
 
-/** Clamp an adjustment to its ranges; null when it would change nothing */
+/**
+ * The looks an image can have. `eink` is the default, because color e-paper
+ * renders darker and duller than a monitor: it lifts midtones, adds saturation,
+ * and crisps up edges the panel's dithering softens.
+ */
+export const PROFILES = [
+  { id: 'eink', name: 'E-ink', description: 'Balanced boost for color e-paper',
+    adjust: { brightness: 5, contrast: 15, saturation: 35, midtones: 15, sharpen: 30 } },
+  { id: 'vivid', name: 'Vivid', description: 'Strong color for illustrations and graphics',
+    adjust: { brightness: 5, contrast: 25, saturation: 70, midtones: 10, sharpen: 40 } },
+  { id: 'bw', name: 'B&W', description: 'Grayscale with extra contrast',
+    adjust: { brightness: 0, contrast: 20, saturation: -100, midtones: 10, sharpen: 30 } },
+  { id: 'none', name: 'Original', description: 'The image as it is, with no changes',
+    adjust: { brightness: 0, contrast: 0, saturation: 0, midtones: 0, sharpen: 0 } },
+];
+
+export const DEFAULT_PROFILE = 'eink';
+
+export function profileAdjust(id) {
+  return (PROFILES.find(p => p.id === id) ?? PROFILES.find(p => p.id === DEFAULT_PROFILE)).adjust;
+}
+
+export function isNeutralAdjust(a) {
+  return !a || ADJUST_KEYS.every(k => !a[k]);
+}
+
+/**
+ * Clamp an adjustment to its ranges, or null when there isn't one. All zeros
+ * stays an object: that's a choice of Original, where null means "use the default".
+ */
 export function sanitizeAdjust(a) {
   if (!a || typeof a !== 'object') return null;
   const clamp = (v, lo, hi) => Number.isFinite(v) ? Math.max(lo, Math.min(hi, Math.round(v))) : 0;
@@ -15,7 +44,7 @@ export function sanitizeAdjust(a) {
     midtones: clamp(a.midtones, -100, 100),
     sharpen: clamp(a.sharpen, 0, 100),
   };
-  return ADJUST_KEYS.some(k => out[k] !== 0) ? out : null;
+  return out;
 }
 
 const to8 = (v) => v <= 0 ? 0 : v >= 255 ? 255 : Math.round(v);
@@ -54,6 +83,30 @@ export function sharpenOptions(amount) {
   const t = (amount ?? 0) / 100;
   if (!(t > 0)) return null;
   return { sigma: 0.8 + t * 0.7, m1: t * 0.5, m2: t * 3 };
+}
+
+/**
+ * Rough stand-in for sharpenOptions() in the browser, in place: an unsharp mask
+ * over a 3×3 blur. The server's sharp() result is the real thing.
+ */
+export function previewSharpen(data, width, height, amount) {
+  const k = amount / 100 * 1.4;
+  if (!(k > 0) || width < 3 || height < 3) return;
+  const src = data.slice();
+  const stride = width * 4;
+  for (let y = 1; y < height - 1; y++) {
+    for (let x = 1; x < width - 1; x++) {
+      const i = y * stride + x * 4;
+      for (let c = 0; c < 3; c++) {
+        const p = i + c;
+        const blur = (src[p - stride - 4] + src[p - stride] + src[p - stride + 4]
+          + src[p - 4] + src[p] + src[p + 4]
+          + src[p + stride - 4] + src[p + stride] + src[p + stride + 4]) / 9;
+        const v = src[p] + (src[p] - blur) * k;
+        data[p] = v <= 0 ? 0 : v >= 255 ? 255 : v;
+      }
+    }
+  }
 }
 
 // Approximate 6-color (E Ink Spectra 6) panel. Pixels are matched against the

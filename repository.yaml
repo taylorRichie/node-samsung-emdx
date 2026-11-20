@@ -1,0 +1,5 @@
+# Lets Home Assistant install the add-on from this repository:
+# Settings → Add-ons → Add-on store → ⋮ → Repositories → add this repository's URL
+name: Samsung EMDX
+url: https://github.com/PeitzGreene/node-samsung-emdx
+maintainer: PeitzGreene

@@ -1,4 +1,4 @@
-import { Images, SlidersHorizontal } from "lucide-react"
+import { ListOrdered, Monitor, Settings } from "lucide-react"
 
 export type RailPanel = "properties" | "queue"
 
@@ -7,13 +7,16 @@ interface RightRailProps {
   disabled: boolean
   active: RailPanel | null
   onPick: (panel: RailPanel) => void
+  onSettings: () => void
 }
 
 /** Vertical toolbar on the right edge, top-aligned with the display panel. */
-export function RightRail({ disabled, active, onPick }: RightRailProps) {
+export function RightRail({ disabled, active, onPick, onSettings }: RightRailProps) {
   const btn = (panel: RailPanel, title: string, icon: React.ReactNode) => (
     <button
       disabled={disabled}
+      aria-label={title}
+      aria-pressed={active === panel}
       className={`flex h-8 w-8 items-center justify-center rounded-lg transition-colors ${
         disabled
           ? "text-muted-foreground/30 cursor-default"
@@ -28,9 +31,20 @@ export function RightRail({ disabled, active, onPick }: RightRailProps) {
     </button>
   )
   return (
-    <div className="fixed right-3 md:right-4 top-[72px] z-40 flex flex-col gap-1 rounded-xl border border-border bg-background/70 backdrop-blur-md shadow-lg p-1.5">
-      {btn("properties", "Properties", <SlidersHorizontal className="h-4 w-4" />)}
-      {btn("queue", "Queue", <Images className="h-4 w-4" />)}
+    <div className="surface fixed right-3 md:right-4 top-[72px] z-40 flex flex-col gap-1 p-1.5">
+      {btn("properties", "Display", <Monitor className="h-4 w-4" />)}
+      {btn("queue", "Queue", <ListOrdered className="h-4 w-4" />)}
+      <button
+        disabled={disabled}
+        aria-label="Display settings"
+        title={disabled ? "Select a display" : "Display settings"}
+        className={`flex h-8 w-8 items-center justify-center rounded-lg transition-colors ${
+          disabled ? "text-muted-foreground/30 cursor-default" : "text-muted-foreground hover:text-foreground hover:bg-accent"
+        }`}
+        onClick={onSettings}
+      >
+        <Settings className="h-4 w-4" />
+      </button>
     </div>
   )
 }
@@ -39,7 +53,7 @@ export function RightRail({ disabled, active, onPick }: RightRailProps) {
 export function RailPanelShell({ open, children }: { open: boolean; children: React.ReactNode }) {
   return (
     <div
-      className="fixed top-[72px] bottom-3 right-[64px] z-40 w-[360px] max-w-[calc(100vw-80px)] flex flex-col rounded-xl border border-border bg-background/85 backdrop-blur-md shadow-xl overflow-hidden"
+      className="surface fixed bottom-3 left-3 right-[60px] top-[72px] z-40 flex flex-col overflow-hidden md:left-auto md:right-[64px] md:w-[360px]"
       style={{
         transform: open ? "translateX(0)" : "translateX(calc(100% + 90px))",
         transition: "transform 260ms cubic-bezier(0.32, 0.72, 0, 1)",

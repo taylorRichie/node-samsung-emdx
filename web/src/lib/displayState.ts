@@ -16,3 +16,18 @@ export type DisplayState = "awake" | "asleep"
 export function displayState(status: DisplayStatus | null | undefined): DisplayState {
   return status ? "awake" : "asleep"
 }
+
+export type Orientation = "portrait" | "landscape"
+
+/** The viewer's rotation, which the server keeps in step with the display */
+export function displayOrientation(display: { rotation?: number }): Orientation {
+  return (((display.rotation ?? 0) % 180) + 180) % 180 === 90 ? "landscape" : "portrait"
+}
+
+/** Frame aspect (w/h) of a display, following its orientation */
+export function displayAspect(d: { canvasWidth: number; canvasHeight: number; rotation?: number }) {
+  const landscape = displayOrientation(d) === "landscape"
+  const w = landscape ? d.canvasHeight : d.canvasWidth
+  const h = landscape ? d.canvasWidth : d.canvasHeight
+  return h > 0 ? w / h : 9 / 16
+}

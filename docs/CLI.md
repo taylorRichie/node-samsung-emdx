@@ -68,7 +68,7 @@ Shows an image on the EMDX. Starts a local HTTP server, connects to the display 
 ```bash
 node bin/index.mjs show-image \
   --host 192.168.1.37 \
-  --pin 014381 \
+  --pin 123456 \
   --image /path/to/image.jpg
 ```
 
@@ -77,7 +77,7 @@ node bin/index.mjs show-image \
 | Option          | Required | Default        | Description                                      |
 | --------------- | -------- | -------------- | ------------------------------------------------ |
 | `--host`        | Yes      | —              | Display IP address                               |
-| `--pin`         | Yes      | —              | Display PIN (e.g. `000000` or `014381`)          |
+| `--pin`         | Yes      | —              | Display PIN (e.g. `000000` or `123456`)          |
 | `--image`       | Yes      | —              | Path to image file (JPG, PNG, etc.)              |
 | `--mac`         | No       | —              | MAC address for Wake-on-LAN before pushing       |
 | `--local-ip`    | No       | Auto-detected   | Your machine’s IP (display fetches from this)   |
@@ -87,20 +87,20 @@ node bin/index.mjs show-image \
 
 ```bash
 # Basic push
-node bin/index.mjs show-image --host 192.168.1.37 --pin 014381 --image photo.jpg
+node bin/index.mjs show-image --host 192.168.1.37 --pin 123456 --image photo.jpg
 
 # Wake display first, then push, then sleep after 20 minutes
 node bin/index.mjs show-image \
   --host 192.168.1.37 \
-  --pin 014381 \
+  --pin 123456 \
   --image photo.jpg \
-  --mac 28:07:08:28:F2:F8 \
+  --mac 00:11:22:33:44:55 \
   --sleep-after 20
 
 # Use a specific local IP (e.g. when multiple interfaces)
 node bin/index.mjs show-image \
   --host 192.168.1.37 \
-  --pin 014381 \
+  --pin 123456 \
   --image photo.jpg \
   --local-ip 192.168.1.100
 ```
@@ -109,10 +109,10 @@ node bin/index.mjs show-image \
 
 ### `wake` — Wake the display via Wake-on-LAN
 
-Sends a Wake-on-LAN magic packet to the display’s MAC address. Use when the display is in deep sleep and not responding to TCP.
+Sends a Wake-on-LAN magic packet to the display’s MAC address. Use when the display went to sleep with network standby on and isn't answering on port 1515. A display in deep sleep (network standby off) ignores it; press its power button instead.
 
 ```bash
-node bin/index.mjs wake --mac 28:07:08:28:F2:F8
+node bin/index.mjs wake --mac 00:11:22:33:44:55
 ```
 
 **Options:**
@@ -126,16 +126,16 @@ node bin/index.mjs wake --mac 28:07:08:28:F2:F8
 - Display must support Wake-on-LAN and have it enabled
 - Magic packet is sent to `255.255.255.255:9` (UDP broadcast)
 - Wait a few seconds after waking before running `show-image` or `status`
-- WoL only works when the display was put to sleep with network standby disabled; otherwise it may already be reachable
+- WoL only works when the display went to sleep with network standby **on**. In deep sleep (network standby off) its Wi-Fi is off and the packet never arrives
 
 ---
 
 ### `sleep` — Power off the display (deep sleep)
 
-Powers off the display and disables network standby for minimal battery use. Use Wake-on-LAN to wake it again.
+Powers off the display and disables network standby for minimal battery use. Wake-on-LAN can't wake it from this: only its power button, or an entry in a [content schedule](MDC-COMMANDS.md#content-schedules), can.
 
 ```bash
-node bin/index.mjs sleep --host 192.168.1.37 --pin 014381
+node bin/index.mjs sleep --host 192.168.1.37 --pin 123456
 ```
 
 **Options:**
@@ -153,7 +153,7 @@ node bin/index.mjs sleep --host 192.168.1.37 --pin 014381
 3. Powers off (MDC `0x11` → `0x00`)
 4. Disconnects
 
-After this, the display is in deep sleep. Use `wake --mac` to bring it back.
+After this, the display is in deep sleep. Press its power button to bring it back; `wake --mac` won't reach it.
 
 ---
 
@@ -162,7 +162,7 @@ After this, the display is in deep sleep. Use `wake --mac` to bring it back.
 Connects to the display and reports power, battery, and device info.
 
 ```bash
-node bin/index.mjs status --host 192.168.1.37 --pin 014381
+node bin/index.mjs status --host 192.168.1.37 --pin 123456
 ```
 
 **Options:**
@@ -215,8 +215,8 @@ node bin/index.mjs discover
 
   Display 4 (EM32DX)
     Host:   192.168.1.220
-    MAC:    B0:F2:F6:EF:EB:CC
-    Serial: 0WPSHNPY900879F
+    MAC:    00:11:22:33:44:66
+    Serial: 0WPSXXXX000000X
 ```
 
 **How it works:**
@@ -276,7 +276,7 @@ The Samsung MDC protocol uses:
 | `0x0E`     | Software Version     | Get       | —           | Firmware version                      |
 | `0x11`     | Power Control        | Get/Set   | `0x00` off, `0x01` on | Power state                    |
 | `0x1B`     | Battery State        | Get       | `0x73`      | Battery level, charging, health       |
-| `0x25`     | On Timer             | Get/Set   | `[en, repeat, hh, mm, 0x01]` | Auto power-on schedule |
+| `0x25`     | On Timer             | Get/Set   | `[en, repeat, hh, mm, 0x01]` | Auto power-on schedule. Set is refused on firmware 1130.7 |
 | `0x67`     | Device Name          | Get       | —           | Display name                          |
 | `0xB5`     | Network Standby      | Get/Set   | `0x00` off, `0x01` on | WiFi listener on/off      |
 | `0xC7`     | Content Download     | Set       | `0x53 0x80 <len> <url>` | Set content manifest URL   |
@@ -340,6 +340,10 @@ The display expects a JSON manifest at the URL you send via `0xC7`. This project
 
 The display fetches `image_url` and uses it as the image to show. The CLI serves the image file directly at that URL.
 
+The manifest is really a schedule: several entries with their own start times let the display change images by itself, waking from deep sleep to do it. It also reports download progress back to this server. See [Content schedules](MDC-COMMANDS.md#content-schedules).
+
+The display shows whichever entry started most recently, including one left by an earlier push, so `show-image` doesn't send the `1970-01-01 00:00:00` start shown above: it reads the display's clock and starts the entry at the current minute.
+
 ---
 
 ## Image Specifications
@@ -374,12 +378,12 @@ The display fetches `image_url` and uses it as the image to show. The CLI serves
 1. Disable network standby (`0xB5` → `0x00`)
 2. Power off (`0x11` → `0x00`)
 
-This minimizes battery use. WoL is required to wake again.
+This minimizes battery use. WoL can't wake it again: only the power button, or an entry in a [content schedule](MDC-COMMANDS.md#content-schedules), does.
 
 ### Light sleep (not used by default)
 
 - Leave network standby on (`0xB5` → `0x01`) and only power off.
-- Display stays reachable over the network but uses more power.
+- Wi-Fi stays on, so WoL works, but it drains the battery faster.
 
 ---
 
@@ -388,7 +392,7 @@ This minimizes battery use. WoL is required to wake again.
 ### "Connection timed out — display may be asleep"
 
 - Display is off or unreachable.
-- Try `wake --mac` first, then wait 5–10 seconds.
+- If it went to sleep with network standby on, try `wake --mac`, then wait 5–10 seconds. In deep sleep, press its power button.
 - Confirm display IP and that it’s on the same network.
 
 ### "Authentication Failed: Incorrect PIN"
@@ -414,7 +418,7 @@ This minimizes battery use. WoL is required to wake again.
 ### WoL not working
 
 - Confirm MAC address and that WoL is enabled on the display.
-- Display must have been put to sleep with network standby disabled.
+- Display must have been put to sleep with network standby enabled. WoL can't wake it from deep sleep.
 - Some networks block broadcast; try sending to the display’s IP instead of `255.255.255.255` (WoL support may vary).
 
 ### Battery drains overnight

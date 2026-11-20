@@ -4,6 +4,8 @@ services:
     image: samsung-emdx:latest
     container_name: samsung-emdx
     restart: unless-stopped
+    # Signals reach the app, so it stops straight away
+    init: true
 
     ports:
       - "3001:3001"

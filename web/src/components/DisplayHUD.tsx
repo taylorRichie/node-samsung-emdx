@@ -42,6 +42,7 @@ function HudButton({ active, accent, disabled, title, onClick, children }: {
             : "text-muted-foreground hover:text-foreground hover:bg-accent"
       }`}
       title={title}
+      aria-label={title}
       onClick={onClick}
     >
       {children}
@@ -74,7 +75,7 @@ export function DisplayHUD({
     >
       {/* Free Transform sub-modes */}
       {mode === "free" && (
-        <div className="flex items-center gap-0.5 rounded-lg border border-border bg-background/90 backdrop-blur-md shadow-xl px-1 py-1">
+        <div className="flex items-center gap-0.5 surface rounded-xl px-1 py-1">
           <HudButton
             active={ftSub === "constrained"}
             title="Constrained — verticals stay vertical"
@@ -93,17 +94,17 @@ export function DisplayHUD({
         </div>
       )}
 
-      <div className="flex items-center gap-0.5 rounded-lg border border-border bg-background/90 backdrop-blur-md shadow-xl px-1 py-1">
+      <div className="flex items-center gap-0.5 surface rounded-xl px-1 py-1">
         <HudButton
           active={orientation === "portrait"}
-          title="Portrait frame"
+          title="Portrait: changes the display too"
           onClick={() => onOrientation("portrait")}
         >
           <RectangleVertical className="h-4 w-4" />
         </HudButton>
         <HudButton
           active={orientation === "landscape"}
-          title="Landscape frame"
+          title="Landscape: changes the display too"
           onClick={() => onOrientation("landscape")}
         >
           <RectangleHorizontal className="h-4 w-4" />

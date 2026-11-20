@@ -1,0 +1,69 @@
+send_image:
+  target:
+    device:
+      integration: samsung_emdx
+    entity:
+      integration: samsung_emdx
+  fields:
+    url:
+      example: "http://192.168.1.10:8123/local/art.jpg"
+      selector:
+        text:
+          type: url
+    path:
+      example: "/config/www/snapshot.jpg"
+      selector:
+        text:
+    gallery:
+      example: "Botanical/fern.jpg"
+      selector:
+        text:
+    fit: &fit
+      selector:
+        select:
+          translation_key: fit
+          options:
+            - fit
+            - fill
+            - stretch
+    background: &background
+      example: "#ffffff"
+      selector:
+        text:
+    profile: &profile
+      selector:
+        select:
+          translation_key: profile
+          options:
+            - eink
+            - vivid
+            - bw
+            - none
+    wait: &wait
+      selector:
+        boolean:
+
+span_image:
+  fields:
+    group:
+      required: true
+      example: "Hallway"
+      selector:
+        text:
+    url:
+      example: "http://192.168.1.10:8123/local/panorama.jpg"
+      selector:
+        text:
+          type: url
+    path:
+      example: "/config/www/panorama.jpg"
+      selector:
+        text:
+    gallery:
+      example: "Landscapes/alps.jpg"
+      selector:
+        text:
+    fit: *fit
+    background: *background
+    profile: *profile
+    wait: *wait
